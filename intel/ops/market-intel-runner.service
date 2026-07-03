@@ -1,0 +1,14 @@
+[Unit]
+Description=Market Intel 24/7 collector+analysis loop (READ-ONLY, no execution)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mt5-research/intel
+ExecStart=/usr/bin/python3 %h/mt5-research/intel/runner.py
+Restart=always
+RestartSec=30
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

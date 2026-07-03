@@ -1,0 +1,13 @@
+[Unit]
+Description=market-intel executor stack (MT5 bridge + engine + dashboard)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mt5-research/intel
+ExecStart=/usr/bin/python3 -m executor.run
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=default.target

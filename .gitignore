@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.env
+intel/.env
+data/*.sqlite
+data/*.csv
+# keep the small symbol/account JSON specs tracked; ignore bulky bar caches above
+
+# runtime state — journals, logs, caches (each install grows its own)
+intel/data/
+intel/logs/
+intel/executor/data/
+intel/executor/ALLOW_LIVE
+.playwright-mcp/
+
+# local screenshots not referenced by docs
+/executor-dashboard.png
+/market-intel-dashboard.png
+
+# preserved history of the embedded market-intel repo (see Kalahari-Labs/market-intel)
+intel/.git-market-intel.bak/

@@ -1,0 +1,14 @@
+[Unit]
+Description=Market Intel read-only dashboard (http://127.0.0.1:8899)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mt5-research/intel
+ExecStart=/usr/bin/python3 %h/mt5-research/intel/dashboard/server.py 8899
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,11 @@
+{
+  "name": "GOLD",
+  "swap_long": -90.35,
+  "swap_short": 11.15,
+  "swap_mode": 1,
+  "swap_rollover3days": 3,
+  "point": 0.01,
+  "digits": 2,
+  "trade_contract_size": 100.0,
+  "captured_utc": "2026-07-02T17:37:51.289817+00:00"
+}

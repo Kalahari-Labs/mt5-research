@@ -1,0 +1,14 @@
+{
+  "name": "USDJPY",
+  "digits": 3,
+  "point": 0.001,
+  "volume_min": 0.01,
+  "volume_max": 50.0,
+  "volume_step": 0.01,
+  "trade_contract_size": 100000.0,
+  "trade_tick_value": 0.617455466024513,
+  "trade_tick_size": 0.001,
+  "currency_profit": "JPY",
+  "currency_margin": "USD",
+  "description": "US Dollar vs Japanese Yen"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "GOLD",
+  "digits": 2,
+  "point": 0.01,
+  "volume_min": 0.01,
+  "volume_max": 50.0,
+  "volume_step": 0.01,
+  "trade_contract_size": 100.0,
+  "trade_tick_value": 1.0,
+  "trade_tick_size": 0.01,
+  "currency_profit": "USD",
+  "currency_margin": "USD",
+  "description": "GOLD"
+}

@@ -1,0 +1,17 @@
+# Canonical stack for a normally-networked machine.
+#
+# IMPORTANT environment note: on the box this was built on, PyPI is unreachable
+# AND the MetaTrader5 package cannot import on Linux. The code therefore runs on
+# numpy + the standard library, and real market data is pulled through a Wine
+# bridge (see README "Environment note" and tools/mt5_dump.py). The modules keep
+# the same boundaries and metric vocabulary so installing the packages below on a
+# connected machine is a drop-in upgrade, not a rewrite.
+
+MetaTrader5>=5.0.45 ; platform_system == "Windows"
+numpy>=1.26
+pandas>=2.0
+pandas-ta>=0.3.14b
+backtesting>=0.3.3
+python-dotenv>=1.0
+pytest>=8.0
+supabase>=2.0          # optional: only used if SUPABASE_URL + SUPABASE_KEY are set

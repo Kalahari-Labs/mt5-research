@@ -1,0 +1,14 @@
+{
+  "name": "EURUSD",
+  "digits": 5,
+  "point": 1e-05,
+  "volume_min": 0.01,
+  "volume_max": 50.0,
+  "volume_step": 0.01,
+  "trade_contract_size": 100000.0,
+  "trade_tick_value": 1.0,
+  "trade_tick_size": 1e-05,
+  "currency_profit": "USD",
+  "currency_margin": "EUR",
+  "description": "Euro vs US Dollar"
+}

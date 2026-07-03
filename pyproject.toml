@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "market-intel-executor"
+version = "0.2.0"
+description = "Demo-gated autonomous MT5 trading executor with an out-of-sample backtest gate, layered risk vetoes, decision journaling and self-review. Not financial advice; see README risk disclosure."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+# native Windows bridge (Linux/macOS run the bridge under Wine instead)
+windows = ["MetaTrader5>=5.0.45; sys_platform == 'win32'"]
+
+[project.scripts]
+mi-executor = "executor.run:main"
+mi-onboard = "executor.onboard:cli"
+
+[project.urls]
+Repository = "https://github.com/kalahari-labs/mt5-research"
+
+[tool.setuptools]
+package-dir = { "executor" = "intel/executor" }
+packages = ["executor"]

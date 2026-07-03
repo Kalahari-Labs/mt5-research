@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Market Intel — read-only</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#0b0e14;--panel:#12161f;--edge:#1e2431;--txt:#d7dde8;--dim:#7a8494;
+--up:#2dd4a7;--dn:#f2617a;--flat:#9aa4b2;--amber:#e8b44c;--mono:'JetBrains Mono',ui-monospace,Menlo,monospace}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--txt);font:14px/1.45 var(--mono);padding:18px}
+h1{font-size:17px;letter-spacing:2px}
+h2{font-size:12px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px}
+header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+.badge{font-size:11px;padding:2px 9px;border-radius:3px;border:1px solid var(--edge)}
+.badge.ro{color:var(--amber);border-color:var(--amber)}
+.badge.live{color:var(--up);border-color:var(--up)}
+#meta{color:var(--dim);font-size:12px;margin-left:auto}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(340px,1fr))}
+.panel{background:var(--panel);border:1px solid var(--edge);border-radius:6px;padding:12px;margin-bottom:12px}
+.wide{grid-column:1/-1}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{color:var(--dim);text-align:left;font-weight:400;padding:3px 8px 3px 0;border-bottom:1px solid var(--edge)}
+td{padding:3px 8px 3px 0;border-bottom:1px solid #161b26;white-space:nowrap}
+.up{color:var(--up)}.down{color:var(--dn)}.flat{color:var(--flat)}
+.card{background:var(--panel);border:1px solid var(--edge);border-radius:6px;padding:12px}
+.card .sym{font-size:15px;font-weight:700}
+.card .px{float:right;font-size:15px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:1px 12px;font-size:12.5px;margin-top:6px}
+.kv span:nth-child(odd){color:var(--dim)}
+.setup{margin-top:8px;border-top:1px dashed var(--edge);padding-top:7px;font-size:12.5px}
+.setup .disclaimer{color:var(--dim);font-size:10.5px;margin-top:5px}
+.conf{display:inline-block;min-width:44px}
+.newsitem{padding:4px 0;border-bottom:1px solid #161b26;font-size:12.5px}
+.newsitem a{color:var(--txt);text-decoration:none}
+.newsitem a:hover{color:var(--up)}
+.newsitem .src{color:var(--dim);font-size:11px}
+.hl{color:var(--amber)}
+.verdict{background:#1a1420;border:1px solid #3a2a44;border-radius:6px;padding:12px;margin-bottom:12px}
+.verdict b{color:var(--dn)}
+.mono-note{color:var(--dim);font-size:11.5px}
+#healthdot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--dn);margin-right:5px}
+#healthdot.ok{background:var(--up)}
+</style>
+</head>
+<body>
+<header>
+  <h1>MARKET INTEL</h1>
+  <span class="badge live">DATA: LIVE</span>
+  <span class="badge ro">READ-ONLY &mdash; NO EXECUTION, NO ORDER ENTRY</span>
+  <span id="meta"><span id="healthdot"></span><span id="metatxt">connecting…</span></span>
+</header>
+
+<div class="verdict">
+  <b>Research verdict (unchanged):</b> every strategy configuration tested in this repo
+  (29/29 across backtest → robustness → walk-forward, with realistic spread/commission/swap costs)
+  <b>failed validation</b>. See <span class="mono-note">SHORTHOLDS.md / registry panel below</span>.
+  This dashboard describes market structure; nothing on it is a trade recommendation and
+  nothing on it can place an order. The execution pipeline in the parent repo stays demo-only and gated.
+</div>
+
+<div class="panel wide"><h2>Live prices</h2><table id="prices"></table></div>
+
+<h2 style="margin:4px 0 8px">Market state &amp; structure points <span class="mono-note">(descriptive — what the analysis sees, with measured recent-window hit-rate; not advice)</span></h2>
+<div class="grid" id="state"></div>
+
+<div class="panel wide"><h2>Technical signals (descriptive layer)</h2><table id="signals"></table></div>
+
+<div class="grid">
+  <div class="panel"><h2>News feed</h2><div id="news"></div></div>
+  <div class="panel"><h2>Sentiment (keyword rule, 24h window)</h2><table id="sentiment"></table>
+    <h2 style="margin-top:14px">System health</h2><table id="health"></table></div>
+</div>
+
+<div class="panel wide"><h2>Research registry — backtest / walk-forward results (the reason execution stays off)</h2><table id="registry"></table></div>
+
+<script>
+const $=id=>document.getElementById(id);
+const cls=t=>t==='up'?'up':t==='down'?'down':'flat';
+const num=(x,d=5)=>x==null?'—':(+x).toFixed(Math.abs(x)>100?2:d);
+async function refresh(){
+  let d;
+  try{d=await (await fetch('/api/overview')).json();}
+  catch(e){$('metatxt').textContent='API unreachable';$('healthdot').className='';return;}
+  const up=Math.floor(d.server_uptime_s/60);
+  $('metatxt').textContent=`updated ${d.generated_at} · uptime ${up}m · rows: ${d.row_counts.prices} px / ${d.row_counts.signals} sig / ${d.row_counts.news} news`;
+  const stale=d.health.length&&(Date.now()-Date.parse(d.health[0].ts))>15*60*1000;
+  $('healthdot').className=stale?'':'ok';
+
+  $('prices').innerHTML='<tr><th>symbol</th><th>price</th><th>source</th><th>as of</th></tr>'+
+    d.prices.map(p=>`<tr><td><b>${p.symbol}</b></td><td>${num(p.price)}</td><td class="mono-note">${p.source}</td><td class="mono-note">${p.ts}</td></tr>`).join('');
+
+  $('state').innerHTML=d.market_state.map(m=>`
+    <div class="card">
+      <span class="px ${cls(m.trend)}">${num(m.last_close)}</span>
+      <span class="sym">${m.symbol}</span>
+      <div class="kv">
+        <span>trend</span><span class="${cls(m.trend)}">${m.trend} · vol ${m.volatility_regime}</span>
+        <span>support</span><span>${num(m.support)}</span>
+        <span>resistance</span><span>${num(m.resistance)}</span>
+        <span>sweep</span><span class="${m.sweep?'hl':''}">${m.sweep?m.sweep:'none'}</span>
+        <span>sentiment</span><span>${m.sentiment==null?'—':(+m.sentiment).toFixed(2)} (${m.news_count_24h} news/24h)</span>
+      </div>
+      <div class="setup">
+        structure: <b class="${m.setup_bias==='long-structure'?'up':m.setup_bias==='short-structure'?'down':'flat'}">${m.setup_bias}</b>
+        <span class="conf">· hit-rate ${(m.setup_confidence*100).toFixed(0)}%</span><br>
+        level ${num(m.setup_entry)} → next ${num(m.setup_target)} · invalidation ${num(m.setup_stop)}
+        <div class="disclaimer">measured on the recent 300-bar window only — descriptive structure, NOT a signal to trade. No execution exists in this system.</div>
+      </div>
+    </div>`).join('');
+
+  $('signals').innerHTML='<tr><th>symbol</th><th>tf</th><th>trend</th><th>str</th><th>vol</th><th>RSI</th><th>ATR</th><th>S</th><th>R</th><th>sweep</th></tr>'+
+    d.signals.map(s=>`<tr><td>${s.symbol}</td><td>${s.timeframe}</td><td class="${cls(s.trend)}">${s.trend}</td>
+      <td>${(s.trend_strength*100|0)}%</td><td>${s.volatility_regime}</td><td>${s.rsi}</td><td>${num(s.atr)}</td>
+      <td>${num(s.support)}</td><td>${num(s.resistance)}</td><td class="${s.sweep?'hl':''}">${s.sweep||''}</td></tr>`).join('');
+
+  $('news').innerHTML=d.news.map(n=>`<div class="newsitem"><a href="${n.url}" target="_blank" rel="noopener">${n.title}</a><br>
+    <span class="src">${n.source} · ${n.symbol} · ${n.published||n.ts}</span></div>`).join('');
+
+  $('sentiment').innerHTML='<tr><th>symbol</th><th>score</th><th>items</th></tr>'+
+    d.sentiment.map(s=>`<tr><td>${s.symbol}</td><td class="${s.score>0.05?'up':s.score<-0.05?'down':'flat'}">${(+s.score).toFixed(2)}</td><td>${s.n_items}</td></tr>`).join('');
+
+  $('health').innerHTML='<tr><th>component</th><th>status</th><th>cycle</th><th>at</th></tr>'+
+    d.health.slice(0,10).map(h=>`<tr><td>${h.source}</td><td class="${h.status==='ok'?'up':'down'}">${h.status}</td><td>${h.cycle??''}</td><td class="mono-note">${h.ts}</td></tr>`).join('');
+
+  $('registry').innerHTML='<tr><th>ts</th><th>type</th><th>strategy</th><th>symbol</th><th>return%</th><th>PF</th><th>sharpe</th><th>notes</th></tr>'+
+    d.registry.map(r=>{const m=r.metrics_oos||r.metrics_is||{};
+      return `<tr><td class="mono-note">${(r.ts||'').slice(0,10)}</td><td>${r.run_type}</td><td>${r.strategy}</td><td>${r.symbol}</td>
+      <td class="${(m.return_pct||0)>=0?'up':'down'}">${m.return_pct??'—'}</td><td>${m.profit_factor??'—'}</td><td>${m.sharpe??'—'}</td>
+      <td class="mono-note" style="white-space:normal">${(r.notes||'').slice(0,140)}</td></tr>`}).join('');
+}
+refresh();setInterval(refresh,15000);
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "USDJPY",
+  "swap_long": 2.11,
+  "swap_short": -29.59,
+  "swap_mode": 1,
+  "swap_rollover3days": 3,
+  "point": 0.001,
+  "digits": 3,
+  "trade_contract_size": 100000.0,
+  "captured_utc": "2026-07-02T17:37:35.441742+00:00"
+}

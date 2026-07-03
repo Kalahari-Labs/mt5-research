@@ -1,0 +1,11 @@
+{
+  "name": "AUDUSD",
+  "swap_long": -0.89,
+  "swap_short": -3.19,
+  "swap_mode": 1,
+  "swap_rollover3days": 3,
+  "point": 1e-05,
+  "digits": 5,
+  "trade_contract_size": 100000.0,
+  "captured_utc": "2026-07-02T17:37:43.169941+00:00"
+}

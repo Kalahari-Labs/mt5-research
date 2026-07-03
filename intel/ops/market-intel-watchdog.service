@@ -1,0 +1,7 @@
+[Unit]
+Description=Market Intel stale-heartbeat watchdog (one-shot, fired by timer)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/mt5-research/intel
+ExecStart=/usr/bin/python3 %h/mt5-research/intel/ops/watchdog.py
