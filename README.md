@@ -18,26 +18,37 @@ protections from.
 > exists because of that. Nothing here is financial advice. If you
 > deliberately unlock a live account, every loss is yours alone.
 
-## Quick start
+## Live showcase (real demo account, real numbers)
+
+![dashboard — full view: symbol monitor, strategy gate, decision feed](intel/docs/screenshots/dashboard-full.png)
+
+A live position with its server-side SL/TP, floating P&L straight from MT5:
+
+![dashboard — live open position](intel/docs/screenshots/dashboard-live-position.png)
+
+## Quick start — one command
 
 | platform | guide |
 |---|---|
 | **Windows** (native, easiest) | [intel/docs/INSTALL-WINDOWS.md](intel/docs/INSTALL-WINDOWS.md) |
 | **Linux** (Wine bridge) | [intel/docs/INSTALL-WINE-MT5.md](intel/docs/INSTALL-WINE-MT5.md) |
 | **macOS** (Wine or remote bridge) | see the Windows doc's macOS note |
+| **Raspberry Pi** (engine on the Pi, bridge elsewhere) | [intel/docs/INSTALL-RASPBERRY-PI.md](intel/docs/INSTALL-RASPBERRY-PI.md) |
 | **Docker** (engine+dashboard container) | `docker compose up -d` — see [docker-compose.yml](docker-compose.yml) |
 
-The 60-second version (any platform, once MT5 + a **demo** login exist):
+Once MT5 + a **demo** login exist, ONE script boots and supervises everything —
+terminal, bridge, engine, dashboard:
 
 ```bash
-git clone https://github.com/kalahari-labs/mt5-research && cd mt5-research
-cp intel/.env.example intel/.env       # set YOUR broker's symbol names + risk taste
-cd intel
-python3 -m executor.onboard            # live-probes every prerequisite
-python3 -m executor.gate               # what earns the right to trade on YOUR broker
-MI_EXEC_MODE=observe python3 -m executor.run   # watch it think, zero orders
-python3 -m executor.run                # autonomous (demo-gated server-side)
+git clone https://github.com/Kalahari-Labs/mt5-research && cd mt5-research
+./run.sh check     # live-probes every prerequisite, tells you what to fix
+./run.sh gate      # what earns the right to trade on YOUR broker's data
+./run.sh observe   # watch it think — full pipeline, zero orders
+./run.sh           # autonomous (demo-gated server-side, always)
 ```
+
+Windows: same commands with `run.bat`. It auto-creates `intel/.env` from the
+example on first run — set `MI_SYMBOLS` to your broker's symbol names.
 
 Dashboard: http://127.0.0.1:8877 — account, live positions, what the bot sees
 per symbol, the strategy gate, every decision with its reason, lessons, daily

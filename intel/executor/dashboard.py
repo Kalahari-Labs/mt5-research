@@ -174,7 +174,7 @@ async function tick(){
   const f=s.forward_test;
   $('fwd').textContent=f?('forward test day '+f.day+' of 90 · started '+f.start+
    ' @ '+fmt(f.start_equity)+(f.return_pct==null?'':' · '+(f.return_pct>=0?'+':'')+
-   f.return_pct+'% since start'):'';
+   f.return_pct+'% since start')):'';
   rows($('positions'),['ticket','symbol','side','lots','open','now','sl','tp','P&L','swap'],
    s.positions,p=>'<tr><td>'+p.ticket+'</td><td>'+p.symbol+'</td><td>'+(p.type===0?'buy':'sell')+
    '</td><td>'+p.volume+'</td><td>'+p.price_open+'</td><td>'+p.price_current+'</td><td>'+p.sl+
