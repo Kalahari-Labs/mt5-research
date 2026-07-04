@@ -14,6 +14,12 @@ dependencies = ["numpy>=1.24"]
 [project.optional-dependencies]
 # native Windows bridge (Linux/macOS run the bridge under Wine instead)
 windows = ["MetaTrader5>=5.0.45; sys_platform == 'win32'"]
+# optional persistence backend for the intel plane / research journal
+supabase = ["supabase>=2.0"]
+# nicer .env loading; config.py falls back to a hand-rolled loader without it
+env = ["python-dotenv>=1.0"]
+# test tooling (the suites run on stdlib unittest; pytest is optional)
+dev = ["pytest>=8.0"]
 
 [project.scripts]
 mi-executor = "executor.run:main"
@@ -23,5 +29,7 @@ mi-onboard = "executor.onboard:cli"
 Repository = "https://github.com/kalahari-labs/mt5-research"
 
 [tool.setuptools]
+# "executor" lives under intel/executor; "core" is the shared contract package
+# at the repo root (dependency-free). Both are importable after `pip install .`.
 package-dir = { "executor" = "intel/executor" }
-packages = ["executor"]
+packages = ["executor", "core"]
