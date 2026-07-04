@@ -1,337 +1,484 @@
-# mt5-research — market-intel executor + research harness
+# 📋 Full Repository Documentation — `mt5-research`
 
-An **autonomous, demo-gated MT5 trading executor** plus the research harness
-that keeps it honest. Ten rule-based strategies (trend, breakout, mean
-reversion, ICT fair-value-gap / liquidity-sweep / order-block, session
-breakout, scalping) run behind one contract: **nothing trades until it passes
-an out-of-sample backtest gate on your broker's own data**, every entry has a
-server-enforced SL+TP, every decision — including every skip — is journaled,
-and every closed trade gets a data-checked post-mortem the bot builds
-protections from.
-
-> ⚠️ **Risk disclosure — read this first.** This software places real orders
-> on whatever account the attached MT5 terminal is logged into. It ships
-> **locked to demo accounts** (re-verified server-side before every single
-> order). Trading leveraged products can lose more than you expect, fast.
-> Backtests and demo results do **not** imply live profits. This repo's own
-> research found most simple strategies lose after real costs — the gate
-> exists because of that. Nothing here is financial advice. If you
-> deliberately unlock a live account, every loss is yours alone.
-
-## Live showcase (real demo account, real numbers)
-
-![dashboard — full view: symbol monitor, strategy gate, decision feed](intel/docs/screenshots/dashboard-full.png)
-
-A live position with its server-side SL/TP, floating P&L straight from MT5:
-
-![dashboard — live open position](intel/docs/screenshots/dashboard-live-position.png)
-
-## Quick start — one command
-
-| platform | guide |
-|---|---|
-| **Windows** (native, easiest) | [intel/docs/INSTALL-WINDOWS.md](intel/docs/INSTALL-WINDOWS.md) |
-| **Linux** (Wine bridge) | [intel/docs/INSTALL-WINE-MT5.md](intel/docs/INSTALL-WINE-MT5.md) |
-| **macOS** (Wine or remote bridge) | see the Windows doc's macOS note |
-| **Raspberry Pi** (engine on the Pi, bridge elsewhere) | [intel/docs/INSTALL-RASPBERRY-PI.md](intel/docs/INSTALL-RASPBERRY-PI.md) |
-| **Docker** (engine+dashboard container) | `docker compose up -d` — see [docker-compose.yml](docker-compose.yml) |
-
-Once MT5 + a **demo** login exist, ONE script boots and supervises everything —
-terminal, bridge, engine, dashboard:
-
-```bash
-git clone https://github.com/Kalahari-Labs/mt5-research && cd mt5-research
-./run.sh check     # live-probes every prerequisite, tells you what to fix
-./run.sh gate      # what earns the right to trade on YOUR broker's data
-./run.sh observe   # watch it think — full pipeline, zero orders
-./run.sh           # autonomous (demo-gated server-side, always)
-```
-
-Windows: same commands with `run.bat`. It auto-creates `intel/.env` from the
-example on first run — set `MI_SYMBOLS` to your broker's symbol names.
-
-Dashboard: http://127.0.0.1:8877 — account, live positions, what the bot sees
-per symbol, the strategy gate, every decision with its reason, lessons, daily
-reports. Phone notifications on entries/exits/halts: set `MI_NTFY_TOPIC`
-(keyless, [ntfy.sh](https://ntfy.sh)) or a Telegram bot token in `.env`.
-Emergency stop: `touch intel/executor/data/KILL` → flattens everything, halts.
-
-Full architecture + safety model: **[intel/executor/EXECUTOR.md](intel/executor/EXECUTOR.md)**.
-The 24/7 read-only intel plane (collectors, regime analysis, news):
-[intel/README.md](intel/README.md).
+> **Kalahari Labs · market-intel executor + research harness**
+> Audit date: 2026-07-04 · **114/114 tests passing** ✅
 
 ---
 
-## The research harness
+## Table of Contents
 
-Everything below is the **research plane** the executor grew out of: a
-disciplined, demo-only backtest/walk-forward laboratory. It is deterministic
-and rule-based; no LLM makes trading decisions; all risk controls live in
-plain code. Its verdicts (29/29 momentum configs failed walk-forward under
-real costs) are the reason the executor gates everything.
+1. [What This Is](#what-this-is)
+2. [Architecture Overview](#architecture-overview)
+3. [The Two Planes](#the-two-planes)
+4. [Module-by-Module Breakdown](#module-by-module-breakdown)
+5. [Strategies](#strategies)
+6. [The 5-Phase Research Journey](#the-5-phase-research-journey)
+7. [Cost & Fill Model](#cost--fill-model)
+8. [Data Pipeline](#data-pipeline)
+9. [Safety Model](#safety-model)
+10. [Configuration Reference](#configuration-reference)
+11. [Test Suite Results](#test-suite-results)
+12. [Deployment Options](#deployment-options)
+13. [Codebase Stats](#codebase-stats)
 
-## What it is
-- Two research strategies behind one contract: the **SMA crossover** baseline and
-  **`ts_momentum`** — a properly-constructed time-series (trend-following) momentum
-  strategy, the current subject of interest (`buy_and_hold` is a trivial placeholder).
-- A backtest over **real** broker history with a clean metrics report.
-- A deterministic, unit-tested risk module — the *only* thing allowed to approve
-  an order.
-- A demo-only execution module that is **OFF by default**, **dry-run by
-  default**, and **hard-refuses any non-demo account**.
-- A journal of every signal, decision, rejection, and (demo) fill.
+---
 
-## Module map (one responsibility each)
-| file | responsibility |
-|------|----------------|
-| `config.py` | single source of truth — symbol, timeframe, strategy/risk/backtest/cost/walk-forward params (override via `.env`) |
-| `data.py` | OHLCV provider: live MetaTrader5 if reachable, else the real cached CSV |
-| `strategies/` | strategy registry + the `Strategy` contract; `sma_crossover` (baseline) + `ts_momentum` (time-series momentum, the live subject) + `buy_and_hold` (placeholder) |
-| `strategy.py` | DEPRECATED shim re-exporting the SMA pieces (use `strategies/`) |
-| `backtest.py` | strategy-agnostic engine; legacy-vs-realistic cost audit; report |
-| `robustness.py` | sweeps a strategy's param grid → text heatmap + SPIKE / PLATEAU / NO-EDGE verdict |
-| `walkforward.py` | rolling walk-forward / out-of-sample validation (anti-curve-fit guard) |
-| `registry.py` | results registry over the SQLite DB; run log + multiple-testing counter (CLI) |
-| `risk.py` | position sizing + max-risk, max-daily-loss, max-open-positions caps + kill switch |
-| `execution.py` | demo-only, off-by-default order path; routes through `risk.py`; refuses live accounts |
-| `journal.py` | append-only event log to SQLite (or Supabase if configured) |
-| `portfolio.py` | cross-asset portfolio layer: fixed-param momentum sleeves, inverse-vol equal-risk weighting, combined curve, portfolio walk-forward |
-| `tools/mt5_dump.py` | one-shot Wine-side dumper that fetches real data onto this box |
-| `tools/dump_basket.py` | Wine-side basket dumper (case-sensitive symbols, hidden-symbol select, downward depth probing) for the portfolio's cross-asset D1 data |
+## What This Is
 
-The explicit cost model lives in `config.py` (`CostModel`, `REALISTIC_COSTS`,
-`LEGACY_COSTS`, per-instrument `INSTRUMENT_COSTS` incl. overnight swap). Audit /
-robustness / validation / portfolio write **`FILL_MODEL.md`**, **`ROBUSTNESS.md`**,
-**`WALKFORWARD.md`**, **`PORTFOLIO.md`**.
+An **autonomous, demo-gated MT5 trading executor** and its underlying **research harness** — the disciplined laboratory that proved most naive strategies fail, and built the gate that prevents unprofitable ones from ever trading.
 
-## Add a new strategy (one file + one line)
-1. Add `strategies/my_strategy.py` implementing the `Strategy` contract
-   (`generate(close, **params) -> Signals`; optionally `default_params` /
-   `param_grid`). Pure — signals in, nothing else.
-2. Add one line to `strategies/__init__.py`: `register(MyStrategy())`.
+### Core Philosophy
+- **Nothing trades until it passes an out-of-sample backtest gate** on real broker data
+- Every entry has a server-enforced SL+TP
+- Every decision — including every skip — is journaled
+- Every closed trade gets a data-checked post-mortem
+- The system's own research found 29/29 momentum configs failed walk-forward under real costs — the gate exists **because** of that
 
-No engine or backtest changes are needed. Select it with `STRATEGY_NAME=my_strategy`
-in `.env`. If your params are **not** `(fast, slow)`, also override two optional
-contract hooks so the walk-forward harness stays strategy-agnostic: `wf_grid()` (the
-`{param: values}` grid to search per in-sample window) and `warmup_bars(**params)`
-(leading bars the signal needs, for look-ahead-free OOS seeding). Default to `None`/
-largest-int, which preserves the SMA path exactly — see `ts_momentum` for a worked
-non-`(fast, slow)` example.
+### Key Numbers
+- **~10,450 lines** of Python across 30+ modules
+- **114 unit tests**, all passing (2.4 seconds)
+- **7,177 D1 bars** of EURUSD data (euro-era 1999→2026, ~27.5 years)
+- **3 research strategies** + **10 executor strategies**
+- **Zero external dependencies** beyond `numpy` + stdlib
 
-## Environment note (important)
-This was built on a Linux machine where:
-1. the official **`MetaTrader5` package cannot import** (it is Windows-only), and
-2. **PyPI is unreachable**, so `pandas` / `pandas-ta` / `backtesting.py` / `pytest`
-   cannot be installed.
+---
 
-So, exactly as the brief allows for the data layer, the code runs on **numpy +
-the standard library**:
-- **Real data** is pulled through the existing **Wine MT5 bridge** by
-  `tools/mt5_dump.py` and cached. SMA uses `data/EURUSD_60.csv` (15,000 H1 bars);
-  `ts_momentum` uses `data/EURUSD_1440.csv` (**7,177 D1 bars, euro-era 1999→2026**).
-  Both are EURUSD, XMGlobal-MT5 **demo** account `336582315`; `data.py` reads the
-  cache keyed by `SYMBOL`/`TIMEFRAME_MIN`. (The broker serves D1 back to 1988, but
-  pre-1999 "EURUSD" is a synthetic pre-euro reconstruction, kept out of the honest
-  test as `data/EURUSD_1440_full_1988.csv`.)
-- Indicators use numpy (`pandas-ta` substitute — a rolling mean is exact anyway).
-- The backtest uses a small, transparent numpy engine in `backtest.py` (the
-  `backtesting.py` substitute) with the same metric vocabulary and a strict
-  next-bar-open fill (no look-ahead).
-- Tests use the stdlib `unittest` runner (the `pytest` substitute), so they run
-  with **zero installs**.
+## Architecture Overview
 
-`requirements.txt` lists the canonical stack; on a networked machine
-`pip install -r requirements.txt` makes those the drop-in engines without changing
-the module boundaries.
+```mermaid
+graph TD
+    subgraph "Research Plane (root)"
+        C[config.py] --> D[data.py]
+        D --> B[backtest.py]
+        B --> R[robustness.py]
+        B --> W[walkforward.py]
+        B --> P[portfolio.py]
+        B --> SH[shortholds.py]
+        S[strategies/] --> B
+        RI[risk.py] --> E[execution.py]
+        J[journal.py] --> E
+        REG[registry.py] --> B
+        REG --> W
+        REG --> P
+    end
 
-## Run the backtest / cost audit
+    subgraph "Executor Plane (intel/executor)"
+        ENG[engine.py] --> BS[bridge_server.py]
+        ENG --> GT[gate.py]
+        ENG --> RV[review.py]
+        ENG --> RSK[risk.py]
+        ENG --> STR[strategies.py]
+        ENG --> ST[store.py]
+        DASH[dashboard.py] --> ST
+        BS --> MT5[MT5 Terminal]
+    end
+
+    subgraph "Intel Plane (intel/)"
+        RUN[runner.py] --> COLL[collectors/]
+        RUN --> ANA[analysis/]
+        IST[store.py] --> DB[(SQLite / Supabase)]
+    end
+
+    subgraph "Shared Contracts (core/)"
+        BRK[broker.py]
+        DEC[decision.py]
+        MD[market_data.py]
+        CRSK[risk.py]
+        CSTR[strategy.py]
+    end
+```
+
+---
+
+## The Two Planes
+
+### 1. Research Plane (repo root)
+
+The **backtest / walk-forward / robustness laboratory**. Deterministic, rule-based, LLM-free. Produces the verdicts that the executor's gate enforces.
+
+| Component | Description |
+|---|---|
+| Backtesting engine | Strategy-agnostic, vectorised numpy engine with realistic cost model |
+| Robustness scanner | Parameter surface sweeps → SPIKE / PLATEAU / NO-EDGE verdicts |
+| Walk-forward validation | Rolling IS/OOS folds, no-peeking, continuous OOS equity curve |
+| Portfolio layer | Cross-asset inverse-vol weighted, common window alignment, portfolio WF |
+| Short-hold analysis | Phase 5: H4 hold-time vs financing decomposition with kill criterion |
+
+### 2. Executor Plane (`intel/executor/`)
+
+The **autonomous trading loop** — demo-gated, self-auditing, 24/7. Built on top of the intel plane's read-only market intelligence.
+
+| Component | Description |
+|---|---|
+| Engine | 30-second loop: reconcile → manage → decide → order |
+| Bridge | Wine-side HTTP server — the ONLY file that calls `order_send` |
+| Gate | OOS backtest on 5,000 fresh broker bars per strategy×symbol |
+| Risk | 0.5% sizing, 2% daily halt, 10% drawdown halt, news blackout |
+| Review | Post-mortem on every closed trade, auto-disable losing combos |
+| Dashboard | `http://127.0.0.1:8877` — live positions, decision feed, gate status |
+
+---
+
+## Module-by-Module Breakdown
+
+### Research Core (Root)
+
+| Module | Lines | Responsibility |
+|---|--:|---|
+| [config.py](file:///home/flowdaaddy/mt5-research/config.py) | 316 | Single source of truth. 8 frozen dataclasses (`StrategyConfig`, `RiskConfig`, `BacktestConfig`, `CostModel`, `WalkForwardConfig`, `ExecutionConfig`, `JournalConfig`). Every param overridable via `.env`. Per-instrument cost table (`INSTRUMENT_COSTS`). `cost_for()` factory builds realistic cost models per symbol. |
+| [data.py](file:///home/flowdaaddy/mt5-research/data.py) | 124 | OHLCV provider. Tries live MT5 → falls back to cached CSV from Wine bridge. Returns `OHLCV` dataclass with numpy arrays. Symbol specs from JSON. |
+| [backtest.py](file:///home/flowdaaddy/mt5-research/backtest.py) | 406 | Strategy-agnostic simulation engine. `_simulate()` is the core loop: next-bar-open fills (no look-ahead), full cost accounting (spread, commission, slippage, swap), mark-to-market equity curve. `run()` is the high-level API. Includes legacy-vs-realistic comparison, look-ahead audit, and verdict printer. |
+| [risk.py](file:///home/flowdaaddy/mt5-research/risk.py) | 150 | **THE ONLY module allowed to approve an order.** Position sizing = `(balance × risk%) ÷ (stop_distance ÷ tick_size × tick_value)`, floored to lot step. Enforces: kill switch, daily loss cap, max open positions, per-trade risk budget, daily loss budget. Zero I/O — pure arithmetic. |
+| [execution.py](file:///home/flowdaaddy/mt5-research/execution.py) | 208 | Demo-only order path. OFF by default, dry-run by default. 5-layer safety: risk gate → account DEMO check → disabled/dry-run filter → send with filling-mode retry → verify broker retcode. **No code path can place a real-money order.** |
+| [journal.py](file:///home/flowdaaddy/mt5-research/journal.py) | 95 | Append-only event log. SQLite by default, Supabase if configured. Records every signal, decision, rejection, and fill with UTC timestamp. |
+| [registry.py](file:///home/flowdaaddy/mt5-research/registry.py) | 158 | Results registry over SQLite. Logs every backtest/robustness/WF run with content hash (dedup detection). Tracks **multiple-testing count**: distinct strategy+param configs ever evaluated OOS. CLI: `list [N]`, `count`. |
+| [robustness.py](file:///home/flowdaaddy/mt5-research/robustness.py) | 251 | Parameter surface sweep. Full strategy param grid × full history with realistic costs. Text heatmap + SPIKE/PLATEAU/NO-EDGE verdict via connected-component analysis of the profitable region. In-sample only (shape, not validation). |
+| [walkforward.py](file:///home/flowdaaddy/mt5-research/walkforward.py) | 368 | Rolling walk-forward OOS validation. Strategy-agnostic: grid-searches each strategy's `wf_grid()` per IS window, applies best to strictly-following OOS window. OOS segments chained into continuous curve. Handles naive-average-vs-pooled bias warning. |
+| [portfolio.py](file:///home/flowdaaddy/mt5-research/portfolio.py) | 556 | Cross-asset portfolio layer. Fixed-param momentum sleeves, inverse-vol equal-risk weighting, common-window alignment, sleeve correlation matrix, portfolio walk-forward with causal IS weight re-estimation. 7-instrument basket (5 kept, 2 dropped for insufficient history). |
+| [shortholds.py](file:///home/flowdaaddy/mt5-research/shortholds.py) | 495 | Phase 5: H4 short-hold momentum analysis. 3 a-priori configs (C1/C2/C3), kill criterion before completeness, 3-stack cost decomposition (gross → +trading → +swap = net), directional swap model, H4 robustness surface. |
+| [strategy.py](file:///home/flowdaaddy/mt5-research/strategy.py) | ~12 | DEPRECATED shim re-exporting SMA pieces. Use `strategies/`. |
+
+---
+
+### Strategies Package (`strategies/`)
+
+| Module | Lines | Description |
+|---|--:|---|
+| [base.py](file:///home/flowdaaddy/mt5-research/strategies/base.py) | 62 | `Strategy` contract + `Signals` dataclass. Pure: `generate(close, **params) → Signals`. Optional hooks: `param_grid()`, `wf_grid()`, `warmup_bars()`, `validate_params()`. |
+| [sma_crossover.py](file:///home/flowdaaddy/mt5-research/strategies/sma_crossover.py) | 61 | SMA fast/slow crossover. +1 when fast>slow, -1 when fast<slow. Numpy rolling mean (exact). 10×9 param grid for robustness sweeps. |
+| [ts_momentum.py](file:///home/flowdaaddy/mt5-research/strategies/ts_momentum.py) | 189 | Moskowitz-Ooi-Pedersen TSMOM. Core: `position = sign(trailing_return[lookback])`. Trend-confirmation filter (EMA anchor, ON by default). Volatility entry filter (OFF by default). Recursive causal EMA. 9×6 robustness grid, 5×3 WF grid. |
+| [buy_and_hold.py](file:///home/flowdaaddy/mt5-research/strategies/buy_and_hold.py) | 22 | Trivial placeholder. Always long, no params. |
+| [\_\_init\_\_.py](file:///home/flowdaaddy/mt5-research/strategies/__init__.py) | 39 | Strategy registry. `register()` / `get()` / `all_names()`. Adding a strategy = 1 file + 1 registration line. |
+
+---
+
+### Core Contracts Package (`core/`)
+
+Shared, dependency-free `@runtime_checkable` Protocols for cross-subsystem convergence:
+
+| Protocol | Purpose |
+|---|---|
+| `BrokerAdapter` | Read/write broker operations (orders, positions, account) |
+| `MarketDataProvider` | OHLCV + tick data access |
+| `RiskManager` | Position sizing + veto decisions |
+| `Strategy` | `decide(bars, i)` with SL+TP |
+| `Decision` / `Action` | Typed decision records |
+
+---
+
+### Executor Components (`intel/executor/`)
+
+| Module | Lines | Description |
+|---|--:|---|
+| [engine.py](file:///home/flowdaaddy/mt5-research/intel/executor/engine.py) | ~18K | Main 30-second loop. Reconcile broker-closed trades, time-stop/Friday-flat management, strategy decisions, risk vetoes, order submission. |
+| [bridge_server.py](file:///home/flowdaaddy/mt5-research/intel/executor/bridge_server.py) | ~14K | Wine-side HTTP server (`:8787`). The ONLY file that calls `order_send`. Re-verifies DEMO per order, refuses orders without SL+TP, hard volume cap. |
+| [strategies.py](file:///home/flowdaaddy/mt5-research/intel/executor/strategies.py) | ~24K | 10 registered strategies (trend, breakout, mean reversion, ICT, session, scalping). |
+| [gate.py](file:///home/flowdaaddy/mt5-research/intel/executor/gate.py) | ~8K | OOS backtest on 5,000 fresh broker bars per strategy×symbol. Must be profitable OOS + in ≥2/3 time slices. |
+| [review.py](file:///home/flowdaaddy/mt5-research/intel/executor/review.py) | ~11K | Post-mortem on every closed trade. Pattern detection (stop-too-tight, against-H4-trend, etc.). Cooldown/disable logic. |
+| [risk.py](file:///home/flowdaaddy/mt5-research/intel/executor/risk.py) | ~6K | 0.5% risk sizing, 2% daily halt, 10% drawdown halt, news blackout ±30min. |
+| [dashboard.py](file:///home/flowdaaddy/mt5-research/intel/executor/dashboard.py) | ~17K | Live web dashboard on `:8877`. Account, positions, decision feed, gate status. |
+| [store.py](file:///home/flowdaaddy/mt5-research/intel/executor/store.py) | ~8K | SQLite persistence for trades, decisions, lessons, equity snapshots. |
+| [config.py](file:///home/flowdaaddy/mt5-research/intel/executor/config.py) | ~7K | Executor-specific configuration. All env-var driven. |
+| [notify.py](file:///home/flowdaaddy/mt5-research/intel/executor/notify.py) | ~3K | Phone notifications via ntfy.sh or Telegram. Fire-and-forget. |
+| [onboard.py](file:///home/flowdaaddy/mt5-research/intel/executor/onboard.py) | ~7K | Live-probes every prerequisite, tells you what to fix. |
+
+---
+
+### Tools (`tools/`)
+
+| Script | Description |
+|---|---|
+| [mt5_dump.py](file:///home/flowdaaddy/mt5-research/tools/mt5_dump.py) | Wine-side one-shot data dumper. Fetches OHLCV from MT5, writes CSV + symbol JSON + account JSON. |
+| [dump_basket.py](file:///home/flowdaaddy/mt5-research/tools/dump_basket.py) | Basket dumper with case-sensitive symbol matching, hidden-symbol selection, downward depth probing. |
+| [dump_h4.py](file:///home/flowdaaddy/mt5-research/tools/dump_h4.py) | H4 bars + swap spec dumper. Captures `swap_long`/`swap_short`/`swap_mode` from `symbol_info()`. |
+| [demo_roundtrip.py](file:///home/flowdaaddy/mt5-research/tools/demo_roundtrip.py) | End-to-end demo fill test through the bridge. |
+
+---
+
+## Strategies
+
+### Research Strategies (3)
+
+| Strategy | Signal | Default TF | Params | Verdict |
+|---|---|---|---|---|
+| **SMA Crossover** | Fast SMA > Slow SMA → long; < → short | H1 | fast=20, slow=50 | ❌ NO EDGE on H1 after costs. Walk-forward OOS negative. |
+| **TS Momentum** | Sign of trailing lookback-period return, with EMA anchor filter | D1 | lookback=120, anchor=200 | ⚠️ Thin: OOS +34.5% over 24yr, but Sharpe 0.2, maxDD -26.5%. Swap kills it. |
+| **Buy & Hold** | Always long | — | none | Trivial placeholder |
+
+### Executor Strategies (10)
+
+| Strategy | Idea | TF |
+|---|---|---|
+| `trend_pullback` | EMA20/50 trend + RSI pullback resolution | H1 |
+| `donchian_breakout` | Channel breakout w/ ATR expansion + trend agreement | H1 |
+| `meanrev_bb` | Fade Bollinger extremes in flat regimes only | H1 |
+| `fvg_retrace` | ICT fair value gap retrace into unfilled 3-candle imbalance | H1 |
+| `liquidity_sweep` | ICT stop hunt: fade failed sweep of N-bar high/low | H1 |
+| `orderblock_retest` | ICT order block: first retest after displacement break | H1 |
+| `london_breakout` | Asian-range breakout in London window | H1 |
+| `momentum_macd` | MACD histogram flip with EMA200 regime | H1 |
+| `rsi2_meanrev` | Connors RSI(2) flush back to EMA20 mean, with-trend | H1 |
+| `scalp_ema_cross` | Session scalper, EMA9/21 cross, tight ATR stops | M15 |
+
+---
+
+## The 5-Phase Research Journey
+
+```mermaid
+flowchart LR
+    P0["Phase 0\nSMA Crossover\n(H1 baseline)"]
+    P1["Phase 1\nRealistic Costs\n(fill model audit)"]
+    P2["Phase 2\nRobustness +\nWalk-Forward"]
+    P3["Phase 3\nTS Momentum\n(D1, 27yr)"]
+    P4["Phase 4\nPortfolio\n(5 instruments)"]
+    P5["Phase 5\nShort-Hold H4\n(directional swap)"]
+
+    P0 -->|"-12.18% → -13.04%"| P1
+    P1 -->|"NO EDGE"| P2
+    P2 -->|"TSMOM hypothesis"| P3
+    P3 -->|"+34.5% OOS (thin)"| P4
+    P4 -->|"swap kills edge"| P5
+    P5 -->|"turnover > savings"| GATE["GATE: SHUT\n❌ Not tradeable"]
+
+    style GATE fill:#ff4444,color:#fff
+```
+
+### Phase 0 — SMA Crossover Baseline
+- SMA(20/50) on EURUSD H1 (15,000 bars)
+- Result: **−12.18%** total return, PF 0.812
+- Negative, but the engine works correctly
+
+### Phase 1 — Realistic Cost Audit
+- Added explicit spread (0.8p), slippage (0.2p), per-lot commission (3.5)
+- Original −12.18% was **OPTIMISTIC** → realistic = **−13.04%** (Δ −0.86 pts)
+- Full audit documented in [FILL_MODEL.md](file:///home/flowdaaddy/mt5-research/FILL_MODEL.md)
+
+### Phase 2 — Robustness + Walk-Forward
+- **Robustness:** SMA → NO EDGE across 90-cell grid (all negative after costs)
+- **Walk-forward:** OOS confirms: negative, as expected
+
+### Phase 3 — Time-Series Momentum (D1)
+- TSMOM on EURUSD D1, 7,177 bars (1999→2026)
+- **Robustness: PLATEAU** — 54/54 cells profitable (PF 1.25–1.36)
+- **Walk-forward (25 folds, 24yr continuous OOS):**
+  - +34.5% total, PF 1.18, maxDD −26.5%, 267 trades
+  - Annualised OOS ≈ +1.25%/yr at Sharpe ~0.2
+  - **Real but thin** — not a green light
+
+### Phase 4 — Cross-Asset Portfolio
+- 5 instruments (EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD)
+- Inverse-vol equal-risk weighting, common window 2011→2026
+- Sleeve correlations low (mean +0.20); diversification reduces maxDD
+- **But with ~1.5–4%/yr swap drag, every sleeve is net-negative post-swap**
+- Portfolio ann: **−1.19%**, Sharpe **−0.20**
+- **Verdict: NOT retail-tradeable as built**
+
+### Phase 5 — Short-Hold H4
+- Question: can faster cycling outrun financing?
+- **Kill criterion fired:** extra execution cost > swap savings
+- Turnover scales faster than swap savings — the hypothesis fails
+- **Gate: NOT MET**
+
+---
+
+## Cost & Fill Model
+
+### The `CostModel` Dataclass
+
+| Parameter | Default | Description |
+|---|---|---|
+| `spread_pips` | 0.8 | Round-trip bid/ask width in pips |
+| `commission_per_lot` | 3.5 | Account currency, per 1.0 lot, per side |
+| `slippage_pips` | 0.2 | Adverse fill per side |
+| `fill_timing` | `next_open` | Realistic; `close` = look-ahead (audit only) |
+| `pip_size` | 0.0001 | EURUSD: 1 pip = 0.0001 |
+| `contract_size` | 100,000 | EURUSD: 1.0 lot = 100k units |
+| `swap_rate_annual` | 0.0 | Symmetric financing drag (Phase 4) |
+| `swap_model` | `symmetric` | `symmetric` (Phase 4) or `directional` (Phase 4b) |
+| `swap_long_per_night` | 0.0 | Directional: price units/unit/night when LONG |
+| `swap_short_per_night` | 0.0 | Directional: price units/unit/night when SHORT |
+| `swap_triple_weekday` | 2 (Wed) | Python weekday charged 3× for T+2 settlement |
+
+### Per-Instrument Costs
+
+| Instrument | Pip Size | Spread | Slip | Comm/Lot | Contract | Swap %/yr |
+|---|---|---|---|---|---|---|
+| EURUSD | 1e-4 | 0.8 | 0.2 | 3.5 | 100K | 2.0% |
+| GBPUSD | 1e-4 | 1.2 | 0.3 | 3.5 | 100K | 2.0% |
+| USDJPY | 1e-2 | 1.0 | 0.3 | 3.5 | 100K | 1.5% |
+| AUDUSD | 1e-4 | 1.0 | 0.3 | 3.5 | 100K | 2.5% |
+| GOLD | 1e-2 | 25.0 | 8.0 | 0.0 | 100 | 4.0% |
+| US500Cash | 1e-1 | 5.0 | 2.0 | 0.0 | 1 | 5.0% |
+| OILCash | 1e-2 | 3.0 | 1.0 | 0.0 | 100 | 6.0% |
+
+---
+
+## Data Pipeline
+
+### Available Data Files
+
+| File | Bars | Range | Size |
+|---|--:|---|--:|
+| `EURUSD_1440.csv` (D1) | 7,177 | 1999→2026 | 468 KB |
+| `EURUSD_60.csv` (H1) | 15,000 | — | 967 KB |
+| `EURUSD_240.csv` (H4) | — | — | 1.3 MB |
+| `GBPUSD_1440.csv` | 5,000 | 2007→ | 354 KB |
+| `USDJPY_1440.csv` | 5,000 | 2007→ | 313 KB |
+| `AUDUSD_1440.csv` | 4,000 | 2011→ | 256 KB |
+| `GOLD_1440.csv` | 6,519 | 2001→ | 401 KB |
+| `US500Cash_1440.csv` | 700 | — | 45 KB |
+| `OILCash_1440.csv` | 1,200 | — | 66 KB |
+
+Plus H4 (`_240.csv`) data for 5 instruments, swap JSONs, symbol specs, and `account.json`.
+
+### Data Flow
+
+```mermaid
+flowchart LR
+    MT5["MT5 Terminal\n(Wine, DEMO account)"] -->|"tools/mt5_dump.py\n(or dump_basket.py)"| CSV["data/*.csv\ndata/*_symbol.json\ndata/*_swap.json"]
+    CSV --> DP["data.py\nload_ohlcv()"]
+    DP --> BT["backtest.py\n_simulate()"]
+    MT5 -->|"Live bridge"| DP
+```
+
+---
+
+## Safety Model
+
+### Research Plane Safety
+
+| Protection | Description |
+|---|---|
+| Demo-only execution | `execution.py` hard-refuses non-DEMO accounts (checked twice) |
+| Off by default | `EXECUTION_ENABLED=false`, `DRY_RUN=true` |
+| Risk gate | `risk.py` is the single approval authority |
+| Kill switch | `_manual_kill` flag halts everything |
+| Daily loss cap | 3% of day-start balance |
+| Max open positions | 1 (configurable) |
+
+### Executor Plane Safety (9 Layers)
+
+| Layer | Rule | Location |
+|---|---|---|
+| 1 | Writes refused unless account is DEMO | `bridge_server.py` |
+| 2 | Orders without SL AND TP refused | `bridge_server.py` |
+| 3 | Volume > 0.50 lots refused | `bridge_server.py` |
+| 4 | Live: triple unlock required | `bridge_server.py` |
+| 5 | Must pass OOS backtest gate | `gate.py` |
+| 6 | 0.5% risk, 2% daily halt, 10% DD halt | `risk.py` |
+| 7 | News blackout ±30 min | `risk.py` |
+| 8 | Cooldown after 3 losses; disable after 5/7d | `review.py` |
+| 9 | `touch executor/data/KILL` → flatten all | `engine.py` |
+
+---
+
+## Configuration Reference
+
+### Environment Variables (`.env`)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `STRATEGY_NAME` | `sma_crossover` | Active research strategy |
+| `SYMBOL` | `EURUSD` | Trading symbol |
+| `TIMEFRAME_MIN` | `60` | Timeframe (60=H1, 240=H4, 1440=D1) |
+| `SMA_FAST` / `SMA_SLOW` | 20 / 50 | SMA params |
+| `MOM_LOOKBACK` / `MOM_ANCHOR` | 120 / 200 | TSMOM params |
+| `RISK_PER_TRADE_PCT` | 1.0 | % of balance risked per trade |
+| `MAX_DAILY_LOSS_PCT` | 3.0 | Daily loss halt threshold |
+| `SPREAD_PIPS` | 0.8 | **Set to YOUR broker's spread** |
+| `COMMISSION_PER_LOT` | 3.5 | Per-lot commission (per side) |
+| `FILL_TIMING` | `next_open` | Realistic fill timing |
+| `WF_IS_BARS` / `WF_OOS_BARS` | 3000 / 500 | Walk-forward window sizes |
+| `EXECUTION_ENABLED` | `false` | Must be true to send orders |
+| `DRY_RUN` | `true` | Must be false to actually send |
+
+---
+
+## Test Suite Results
+
+```
+Ran 114 tests in 2.427s — OK ✅
+```
+
+### Test Coverage by Module
+
+| Test File | Tests | What's Covered |
+|---|--:|---|
+| `test_risk.py` | 11 | Position sizing, max-risk cap, daily loss cap, kill switch, open positions |
+| `test_execution.py` | ~12 | Live refusal, dry-run default, no-send, every safety branch |
+| `test_costs.py` | ~8 | Spread/slippage/commission math, fill_price, CostModel fields |
+| `test_walkforward.py` | 7 | Fold splitter (no look-ahead), OOS-strictly-after-IS, window sizes, grid filtering |
+| `test_strategies.py` | 7 | Strategy contract, registry (register/get/unknown), SMA refactor guard, buy-and-hold |
+| `test_momentum.py` | 13 | Signal vs numpy oracle, truncation invariance (no look-ahead), trend/vol filters, WF generalisation |
+| `test_portfolio.py` | 14 | Swap math, hash stability, swap-reduces-PnL guard, inverse-vol equal-risk, alignment, portfolio WF OOS-after-IS, regression guard (SMA + single-EURUSD exact numbers) |
+| `test_registry.py` | 6 | Log/list round-trip, duplicate detection, multiple-testing counter dedup |
+| `test_core_contracts.py` | ~10 | Protocol compliance for all core contracts |
+| `test_phase5.py` | 14 | Directional swap math, holding periods, swap spec loading, triple-swap day, H4 alignment, symmetric path untouched guard |
+
+### Key Guards
+
+- **SMA refactor guard**: Registered SMA reproduces exact prior numbers bit-for-bit
+- **Truncation invariance**: `regime[:t]` never depends on future data (look-ahead proof)
+- **Momentum registration guard**: Adding TSMOM left SMA's walk-forward search byte-for-byte unchanged
+- **Regression guard**: SMA + single-EURUSD momentum reproduce exact prior numbers
+- **Phase 4 swap guard**: Swap strictly reduces P&L, never changes the signal
+- **Equal-risk guard**: No sleeve > 1.5× median risk contribution (synthetic AND real basket)
+- **Hash stability**: Cost dict hashes are stable across runs (registry dedup reliability)
+
+---
+
+## Deployment Options
+
+| Platform | Guide | Method |
+|---|---|---|
+| **Windows** (easiest) | `intel/docs/INSTALL-WINDOWS.md` | Native MT5 + Python |
+| **Linux** | `intel/docs/INSTALL-WINE-MT5.md` | Wine bridge |
+| **macOS** | See Windows doc's macOS note | Wine or remote bridge |
+| **Raspberry Pi** | `intel/docs/INSTALL-RASPBERRY-PI.md` | Engine on Pi, bridge elsewhere |
+| **Docker** | `docker compose up -d` | Container for engine+dashboard |
+
+### Quick Start
+
 ```bash
-cd ~/mt5-research
-python3 backtest.py
+git clone https://github.com/Kalahari-Labs/mt5-research && cd mt5-research
+./run.sh check     # probes every prerequisite
+./run.sh gate      # backtest gate on YOUR broker's data
+./run.sh observe   # watch it think — zero orders
+./run.sh           # autonomous (demo-gated always)
 ```
-Prints the **legacy-vs-realistic** cost comparison side by side, a look-ahead
-sanity check, and the verdict on the original number, then logs to the registry.
-Costs are configurable in `config.py` / `.env` (`SPREAD_PIPS`,
-`COMMISSION_PER_LOT`, `SLIPPAGE_PIPS`, `FILL_TIMING`). The realistic model is the
-default; **set the spread/commission to your broker's real figures** before
-trusting absolute returns. Full write-up: `FILL_MODEL.md`.
 
-## Run the robustness report (overfit detector)
-```bash
-cd ~/mt5-research
-python3 robustness.py
-```
-Sweeps the strategy's whole param grid over the full history and prints a text
-heatmap of the result surface plus a one-line verdict:
-- **PLATEAU** — broad contiguous profitable region (small param changes don't break
-  it): more likely real.
-- **SPIKE** — profit isolated to one lucky setting, losing neighbours: **curve-fit
-  warning**.
-- **NO EDGE** — nothing profitable in-sample (the common, honest result).
+---
 
-Writes `ROBUSTNESS.md`. This is an in-sample sensitivity scan (shape, not
-validation); the walk-forward is the out-of-sample test.
+## Codebase Stats
 
-## Run the walk-forward (out-of-sample validation)
-```bash
-cd ~/mt5-research
-python3 walkforward.py
-```
-Rolling, non-anchored folds (default ~6-month in-sample / ~1-month out-of-sample,
-config `WF_IS_BARS` / `WF_OOS_BARS` / `WF_STEP`). Strategy-agnostic: each fold
-grid-searches the active strategy's `wf_grid()` params on the in-sample window only
-(best profit factor, ≥ `WF_MIN_TRADES` trades) — falling back to the SMA fast/slow
-grid when a strategy declares none — then applies that fixed set to the
-strictly-following out-of-sample window. Every OOS segment is chained into one continuous OOS equity curve — the
-honest estimate. Prints the IS-vs-OOS degradation, logs to the registry, and
-prints the multiple-testing count. Writes `WALKFORWARD.md`. Expect OOS worse than
-IS (and likely negative for SMA) — that is the guard working, not a failure.
+| Metric | Value |
+|---|---|
+| Total Python lines | ~10,450 |
+| Python modules | 30+ |
+| Test files | 10 |
+| Test cases | 114 |
+| Data files | 28 (CSVs, JSONs, SQLite) |
+| Documentation files | 8 (README, FILL_MODEL, ROBUSTNESS, WALKFORWARD, PORTFOLIO, SHORTHOLDS, GUIDE, EXECUTOR) |
+| Research strategies | 3 |
+| Executor strategies | 10 |
+| Minimum Python version | 3.10 |
+| Required runtime deps | 1 (`numpy>=1.24`) |
+| Test runtime deps | 0 (stdlib `unittest`) |
 
-## Time-series momentum on daily bars (the first real hypothesis test)
-`ts_momentum` is the canonical Moskowitz-Ooi-Pedersen time-series momentum signal:
-**position = sign of the trailing `MOM_LOOKBACK`-period return** (long if the
-past-LOOKBACK return > 0, short/flat if < 0; default lookback 120 D1 bars ≈ 6 months).
-On by default: a **trend-confirmation filter** (take a signal only when price is on
-the correct side of a long EMA anchor `MOM_ANCHOR`, default 200). Off by default: a
-**volatility entry filter** (skip *new* entries in an extreme trailing-vol percentile;
-entry-only, never resizes). Every component is look-ahead-free (a unit test proves
-regime`[:t]` never depends on the future). Sizing is the same fixed-fraction model as
-SMA (vol-targeting is a deliberately separate, later enhancement).
+---
 
-Run the full gauntlet on **daily (D1)** bars — TSMOM's documented home, and far less
-noisy than the H1 where the SMA crossover struggled:
-```bash
-cd ~/mt5-research
-STRATEGY_NAME=ts_momentum TIMEFRAME_MIN=1440 python3 backtest.py     # realistic-cost audit
-STRATEGY_NAME=ts_momentum TIMEFRAME_MIN=1440 python3 robustness.py   # SPIKE/PLATEAU/NO-EDGE
-STRATEGY_NAME=ts_momentum TIMEFRAME_MIN=1440 \
-  WF_IS_BARS=750 WF_OOS_BARS=250 WF_STEP=250 WF_MIN_TRADES=8 python3 walkforward.py
-```
-**Data / timeframe used:** EURUSD **D1, euro-era 1999-01-04 → 2026-06-29, 7,177 bars**
-(~27.5 yrs). D1 was chosen over H4/H1 because that depth gives a meaningful 25-fold
-walk-forward and TSMOM's edge is documented on daily+. The D1 walk-forward windows
-(~3yr IS / ~1yr OOS, `WF_MIN_TRADES=8`) are sized for D1 trade frequency, not the H1
-SMA defaults.
+## Key Honest Verdicts
 
-**Honest verdict — a real but thin trend edge (not a forced winner):**
-- **Robustness: PLATEAU** — 54/54 lookback×anchor cells profitable in-sample
-  (PF ~1.25–1.36), one contiguous block: robust to parameter choice, not a lucky
-  spike (contrast SMA's NO-EDGE/negative result on H1).
-- **Walk-forward (25/25 folds, ~24 yrs continuous OOS — the only curve never optimised
-  on): pooled OOS +34.5%, PF 1.18, win 28.5%, maxDD −26.5%, 267 trades** — net
-  **positive out-of-sample**, where SMA was negative. But it degrades hard IS→OOS
-  (PF 3.78 → 1.18; maxDD −8.5% → −26.5%), only 13 of 25 OOS folds are positive, and a
-  meaningful slice of the gain comes from a few low-trade-count folds. Annualised OOS
-  ≈ **+1.25%/yr** at Sharpe ~0.2 — consistent with the documented single-instrument
-  TSMOM premium, which is small before cross-asset diversification.
+> [!IMPORTANT]
+> **The system's own research found most simple strategies lose after real costs.** The gate exists because of that finding, not despite it.
 
-So momentum **survives** a strict walk-forward (necessary evidence of a real effect),
-but it is thin, drawdown-heavy, and un-diversified — *not* a green light to trade.
-Full write-ups: `ROBUSTNESS.md`, `WALKFORWARD.md`. Phase 4 (below) tested the
-documented next enhancer — cross-asset diversification with honest holding costs —
-and the verdict is negative.
+| Research Phase | Verdict |
+|---|---|
+| SMA Crossover (H1) | ❌ **NO EDGE** — negative in-sample and out-of-sample after costs |
+| TS Momentum (D1, single) | ⚠️ **REAL BUT THIN** — survives walk-forward but Sharpe ~0.2, annualised ~1.25%/yr |
+| Portfolio (D1, 5 instruments) | ❌ **SWAP KILLS IT** — every sleeve net-negative post-financing |
+| Short-Hold H4 | ❌ **TURNOVER > SAVINGS** — execution costs scale faster than swap savings |
+| Executor gate (XM demo) | ⚠️ **2 of 12 combos enabled** — the system refuses to trade most things |
 
-## Phase 4 — cross-asset portfolio with honest holding costs (the gate stays shut)
-```bash
-cd ~/mt5-research
-python3 portfolio.py          # portfolio report + walk-forward + PORTFOLIO.md + registry
-```
-**Question asked:** does the thin single-instrument momentum edge become tradeable
-through diversification, once overnight financing (swap) is charged?
-**Method (anti-overfit by construction):** ONE fixed param set from the D1 plateau
-centre (lookback 120 / anchor 200 — the `ts_momentum` defaults) applied UNIFORMLY to
-every instrument; no per-instrument fitting, so the multiple-testing count grows by
-exactly one config. Each sleeve runs through the unchanged single-instrument engine
-with realistic costs **plus a conservative constant swap drag** (`CostModel.swap_rate_annual`,
-default 0 ⇒ all pre-Phase-4 numbers reproduce at identical registry content hashes;
-per-instrument rates in `config.INSTRUMENT_COSTS`, documented approximations — real
-swaps are directional and occasionally credits; the symmetric drag is the deliberate
-worst case). Sleeves are inverse-volatility weighted (equal standalone risk
-contribution — tested), aligned on their common window, and combined; the portfolio
-walk-forward re-estimates the vol weights causally on each 750-bar IS window and
-applies them to the strictly-following 250-bar OOS window.
-
-**Basket actually available from the broker (XM demo):** EURUSD 7,177 D1 bars (1999→),
-GBPUSD 5,000 (2007→), USDJPY 5,000 (2007→), AUDUSD 4,000 (2011→), GOLD 6,519 (2001→)
-— **used** (common window 2011-03-22→2026-06-29, 3,942 bars). US500Cash (700 bars)
-and OILCash (1,200 bars) — **dropped**: too little history (a short sleeve truncates
-the whole common window; threshold 2,000 bars, documented in `portfolio.py`).
-
-**Honest verdict — diversification works mechanically, but swap kills the edge:**
-- Sleeve correlations are genuinely low (mean pairwise **+0.20**) and portfolio maxDD
-  is shallower than single-EURUSD (−21.3% vs −24.1%): diversification does its job.
-- But with a conservative ~1.5–4%/yr financing drag, **every sleeve is net-negative
-  post-swap** on 2011–2026: portfolio ann **−1.19%**, Sharpe **−0.20**; single-EURUSD
-  ann −1.23%, Sharpe −0.13. Pooled walk-forward OOS: **−8.05%**, Sharpe **−0.11**.
-- Continuity check: single-EURUSD momentum over its full 27-yr history goes
-  **+47.99% (swap off, the Phase-3 number) → −6.7% (swap on)**. The financing drag
-  alone erases the whole edge — a real finding, not a bug.
-
-**Conclusion: this momentum edge is NOT retail-tradeable as built.** Diversification
-cannot rescue a per-sleeve edge that is negative after holding costs — risk parity
-only makes a negative expectation more consistent. The gate to live/demo wiring
-stays closed. Full write-up: `PORTFOLIO.md`.
-
-## Results registry & multiple-testing counter
-Every backtest / robustness / walk-forward run is logged to the SQLite DB
-(strategy, params, costs, data range, IS+OOS metrics, timestamp, content hash —
-identical re-runs are flagged `↻ DUPLICATE`). Inspect it:
-```bash
-python3 registry.py list [N]   # recent runs
-python3 registry.py count      # distinct configs tested against OOS + luck warning
-```
-The **multiple-testing count** is how many distinct strategy+param configs have
-ever been evaluated against out-of-sample data. The more you test, the more likely
-an OOS "winner" is luck — a survivor needs a much higher bar or fresh, unseen data.
-
-## Run the tests
-```bash
-cd ~/mt5-research
-python3 -m unittest discover -s tests -v
-```
-82 tests: position sizing, max-risk / daily-loss / open-positions caps, kill
-switch; every execution safety branch (live refusal, dry-run default, no-send);
-the **cost model**; the **walk-forward fold splitter** (no look-ahead); the
-**strategy registry + refactor guard** (registered SMA reproduces the numbers
-exactly); the **results registry** round-trip + multiple-testing dedup; the
-**`ts_momentum`** guards — signal vs an independent numpy oracle, truncation
-invariance (proof of no look-ahead), the trend/volatility filters, and a guard that
-adding momentum left SMA's walk-forward search byte-for-byte unchanged; and the
-**Phase-4 portfolio** guards — swap cost math + hash stability + "swap strictly
-reduces P&L, never changes the signal", the regression guard (SMA + single-EURUSD
-momentum reproduce their exact prior numbers), inverse-vol equal-risk weighting
-(no sleeve >1.5× the median risk contribution, synthetic AND real basket),
-portfolio aggregation/alignment oracles, and OOS-strictly-after-IS for the
-portfolio walk-forward.
-
-## Refresh the real data (Wine bridge)
-Requires the MT5 terminal logged into the demo account under Wine:
-```bash
-WINEPREFIX=$HOME/.mt5 WINEDEBUG=-all \
-  wine 'C:\Program Files\Python312\python.exe' \
-  'Z:\home\flowdaaddy\mt5-research\tools\mt5_dump.py' EURUSD 60 15000
-```
-Writes `data/<SYMBOL>_<TF>.csv`, `data/<SYMBOL>_symbol.json`, `data/account.json`.
-The dumper itself asserts the account is DEMO before writing anything.
-
-## Risk model
-Position size = `(balance × risk_per_trade_pct) ÷ (stop_distance ÷ tick_size × tick_value)`,
-floored to the lot step. An order is approved only if it also passes: kill switch
-off, daily-loss cap not hit, open-positions cap not hit, and the sized risk fits
-both the per-trade budget and the remaining daily-loss budget. `risk.py` is the
-single approval gate.
-
-## Execution safety (later, demo only)
-Defaults: `EXECUTION_ENABLED=false`, `DRY_RUN=true`. To place orders on the demo
-account **after** you have reviewed backtest results, set in `.env`:
-```
-EXECUTION_ENABLED=true
-DRY_RUN=false
-```
-Even then, `execution.py` reads `account_info()` and **refuses** unless
-`trade_mode == DEMO (0)` — twice (before building the order, and again inside the
-sender). There is no code path that can place a real-money order.
-
-## Out of scope (gated on results)
-No n8n flows, no browser automation, no live trading, no second strategy, no
-dashboard. Those wait until the numbers are reviewed.
+> [!TIP]
+> **The gate refusing to trade is the feature, not a bug.** A system that honestly tells you "no edge found" after 27 years of data and 114 tests is more valuable than one that pretends otherwise.
