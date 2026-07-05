@@ -19,9 +19,10 @@ the bridge. There is no path by which an unverified number reaches the UI.
 """
 from __future__ import annotations
 
+import json
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import numpy as np
 
@@ -135,6 +136,60 @@ class Engine:
             except (BridgeError, BridgeRefused) as e:
                 log("manage close #%s failed: %s" % (t["ticket"], e))
 
+    def manage_trailing(self) -> None:
+        """Move SL to lock in profit based on ATR trailing distance."""
+        if config.TRAILING_STOP_ATR_MULT <= 0:
+            return
+        for t in self.store.open_trades():
+            if t.get("status") != "open": continue
+            spec = self.spec(t["symbol"])
+            tick = self.bridge.tick(t["symbol"])
+            price = tick["bid"] if t["side"] == "buy" else tick["ask"]
+            atr = t.get("entry_atr") or 0.0
+            if not atr: continue
+            
+            trail_dist = atr * config.TRAILING_STOP_ATR_MULT
+            new_sl = price - trail_dist if t["side"] == "buy" else price + trail_dist
+            
+            # Only move SL forward, never widen it
+            cur_sl = t.get("sl", 0.0)
+            should_move = (t["side"] == "buy" and new_sl > cur_sl) or (t["side"] == "sell" and (cur_sl == 0.0 or new_sl < cur_sl))
+            
+            if should_move:
+                try:
+                    res = self.bridge.modify(t["ticket"], sl=round(new_sl, spec.digits))
+                    if res.get("ok"):
+                        self.store.execute("UPDATE trades SET sl=? WHERE id=?", (new_sl, t["id"]))
+                        log("TRAIL #%s %s sl -> %.5f" % (t["ticket"], t["symbol"], new_sl))
+                except BridgeError: pass
+
+    def manage_partials(self) -> None:
+        """Close half the position at a specific R-multiple to de-risk."""
+        if config.PARTIAL_EXIT_R_MULT <= 0:
+            return
+        for t in self.store.open_trades():
+            if t.get("status") != "open" or t.get("partial_closed"): continue
+            spec = self.spec(t["symbol"])
+            tick = self.bridge.tick(t["symbol"])
+            price = tick["bid"] if t["side"] == "buy" else tick["ask"]
+            
+            risk_pts = abs(t["entry_price"] - t["sl"]) if t.get("sl") else 0.0
+            if not risk_pts: continue
+            
+            pnl_pts = (price - t["entry_price"]) if t["side"] == "buy" else (t["entry_price"] - price)
+            cur_r = pnl_pts / risk_pts
+            
+            if cur_r >= config.PARTIAL_EXIT_R_MULT:
+                half_vol = round(t["volume"] / 2.0, 2)
+                if half_vol >= spec.volume_min:
+                    try:
+                        res = self.bridge.close(t["ticket"], volume=half_vol, comment="partial_tp")
+                        if res.get("ok"):
+                            self.store.execute("UPDATE trades SET partial_closed=1 WHERE id=?", (t["id"],))
+                            log("PARTIAL TP #%s %s closed %.2f lots at %.1fR" % (t["ticket"], t["symbol"], half_vol, cur_r))
+                            notify.trade_closed(t["symbol"], t["strategy"], 0.0, "partial_tp", t["ticket"])
+                    except BridgeError: pass
+
     def decide_entries(self, account: dict) -> None:
         try:
             risk.check_halts(self.store, account)
@@ -174,8 +229,9 @@ class Engine:
                 spec = self.spec(symbol)
                 live_spread = (tick.get("ask", 0) - tick.get("bid", 0)) if tick_fresh else 0.0
                 med_spread_pts = float(np.median([b[6] for b in raw[-100:]]))
+                stars = self.calculate_confluence(symbol, tf, reg, None)
                 self.symbol_view(symbol, tf, reg, spec, live_spread, tick_fresh,
-                                 med_spread_pts)
+                                 med_spread_pts, stars)
 
                 for name, strat in strats:
                     sig = strat.decide(bars, i)
@@ -194,13 +250,17 @@ class Engine:
                                           % sig.reason, symbol=symbol, strategy=name,
                                           side=sig.side, detail={"observe": True, "regime": reg})
                         continue
+                    if config.HITL_MODE:
+                        self.propose(symbol, name, tf, sig, reg, account, spec, med_spread_pts)
+                        continue
                     if self.place(symbol, name, tf, sig, reg, account, spec,
                                   live_spread, med_spread_pts):
                         # refresh so per-symbol/global caps hold WITHIN this cycle
                         positions = self.bridge.positions()
 
     def symbol_view(self, symbol: str, tf: str, reg: dict, spec: SymbolSpec,
-                    live_spread: float, tick_fresh: bool, med_spread_pts: float) -> None:
+                    live_spread: float, tick_fresh: bool, med_spread_pts: float,
+                    stars: int = 1) -> None:
         """Journal what the engine currently sees on this symbol — the
         dashboard's 'what is the bot thinking' panel reads exactly this."""
         self.store.set_state("symbol_view:%s:%s" % (symbol, tf), {
@@ -209,6 +269,7 @@ class Engine:
             "atr": round(reg["atr"], max(spec.digits, 2)),
             "rsi": round(reg["rsi"], 1), "close": reg["close"],
             "trend_strength": round(reg["trend_strength"], 2),
+            "stars": stars,
             "spread_points": round(live_spread / spec.point, 1) if spec.point else None,
             "median_spread_points": round(med_spread_pts, 1),
             "market_open": tick_fresh})
@@ -262,6 +323,79 @@ class Engine:
         notify.trade_opened(symbol, strategy, sig.side, lots, res.get("price"),
                             sig.sl, sig.tp, res["position"])
         return True
+
+    def calculate_confluence(self, symbol: str, tf: str, reg: dict, sig) -> int:
+        """Score a setup (1-5 stars) based on confluence factors."""
+        stars = 1
+        # Factor 1: Trend Alignment (Score 1.5 stars if strong sentiment)
+        if reg.get("trend_strength", 0) > 0.6:
+            stars += 1
+        # Factor 2: Volatility Regime (Normalizing ATR - within 50-150% of 100-bar median)
+        # (Simplified check: if vol is 'normal', +1 star)
+        if reg.get("vol") == "normal":
+            stars += 1
+        # Factor 3: Signal Confidence (Strategy tags like ICT 'FVG' + 'OrderBlock' might add stars)
+        if sig is not None and len(sig.tags) > 1:
+            stars += 1
+        # Factor 4: HTF Agreement (Placeholder logic)
+        for t in (sig.tags if sig is not None else []):
+            if "with-trend" in t:
+                stars += 1
+        return min(5, stars)
+
+    def propose(self, symbol: str, strategy: str, tf: str, sig, reg: dict,
+                account: dict, spec: SymbolSpec, med_spread_pts: float) -> None:
+        """Add a trade candidate to pending_trades for manual approval."""
+        try:
+            entry_ref = float(self.bridge.tick(symbol)["ask" if sig.side == "buy" else "bid"])
+            lots = risk.size_position(float(account["equity"]), entry_ref, sig.sl, spec)
+        except (risk.Veto, BridgeError, KeyError) as v:
+            self.store.decide("skip", "sizing (proposal): %s" % v, symbol=symbol,
+                               strategy=strategy, side=sig.side)
+            return
+
+        expires = (datetime.now(timezone.utc) +
+                   timedelta(seconds=config.CYCLE_SEC * 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stars = self.calculate_confluence(symbol, tf, reg, sig)
+        ctx = {"signal": sig.reason, "tags": list(sig.tags), "regime": reg,
+               "median_spread_pts": med_spread_pts, "timeframe": tf, "stars": stars}
+        ctx.update(review.htf_context(self.bridge, symbol))
+
+        self.store.insert("pending_trades", {
+            "symbol": symbol, "strategy": strategy, "side": sig.side,
+            "volume": lots, "sl": round(sig.sl, spec.digits),
+            "tp": round(sig.tp, spec.digits), "reason": sig.reason,
+            "detail": ctx, "ts_created": utcnow(), "ts_expires": expires})
+        self.store.decide("propose", sig.reason, symbol=symbol, strategy=strategy,
+                          side=sig.side, detail={"lots": lots, "sl": sig.sl, "tp": sig.tp})
+        log("PROPOSED %s %s %s %.2f lots (HITL)" % (sig.side.upper(), symbol, strategy, lots))
+        notify.trade_opened(symbol, strategy, sig.side, lots, 0, sig.sl, sig.tp, "PENDING (HITL)")
+
+    def execute_approved_trades(self, account: dict) -> None:
+        """Check for human-approved trades and send them to the bridge."""
+        pending = self.store.query("SELECT * FROM pending_trades WHERE status='approved'")
+        for p in pending:
+            try:
+                # Re-verify risk halts before executing an old approval
+                risk.check_halts(self.store, account)
+                spec = self.spec(p["symbol"])
+                tick = self.bridge.tick(p["symbol"])
+                live_spread = (tick.get("ask", 0) - tick.get("bid", 0))
+
+                # Create a pseudo-signal for the place() call
+                from collections import namedtuple
+                Sig = namedtuple("Sig", ["side", "sl", "tp", "reason", "tags"])
+                ctx = json.loads(p["detail"])
+                sig = Sig(p["side"], p["sl"], p["tp"], p["reason"], ctx.get("tags", []))
+
+                if self.place(p["symbol"], p["strategy"], ctx.get("timeframe", config.TIMEFRAME),
+                              sig, ctx.get("regime", {}), account, spec,
+                              live_spread, ctx.get("median_spread_pts", 0.0)):
+                    self.store.execute("UPDATE pending_trades SET status='executed' WHERE id=?", (p["id"],))
+            except Exception as e:
+                log("failed to execute approved trade #%s: %r" % (p["id"], e))
+                self.store.execute("UPDATE pending_trades SET status='denied', reason=? WHERE id=?",
+                                   ("exec error: %s" % str(e)[:50], p["id"]))
 
     def snapshot(self, account: dict) -> None:
         if self.store.get_state("forward_test_start") is None:
@@ -324,7 +458,11 @@ class Engine:
             return
         self.reconcile()
         self.manage_open()
+        self.manage_trailing()
+        self.manage_partials()
         self.decide_entries(account)
+        if config.HITL_MODE:
+            self.execute_approved_trades(account)
         self.snapshot(account)
         self.maintenance()
 

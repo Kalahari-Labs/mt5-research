@@ -502,11 +502,230 @@ class ScalpEMACross(Strategy):
         return None
 
 
+class EMAStackMomentum(Strategy):
+    """Four-EMA perfect alignment with RSI pullback entry — no emotion, pure stack.
+
+    All four EMAs must be ordered (9>21>50>200 for long) confirming a strong
+    trend. Price pulls back to touch EMA21 then closes back above it while RSI
+    is in the equilibrium zone (35-65) — trend still intact, not exhausted.
+    Stop 1.5 × ATR below entry, take profit 3 × risk. Very selective; high
+    signal quality over volume.
+    """
+    name = "ema_stack"
+
+    def __init__(self, atr_mult: float = 1.5, rr: float = 3.0):
+        self.params = {"atr_mult": atr_mult, "rr": rr}
+
+    def decide(self, bars: Bars, i: int) -> Signal | None:
+        if i < 210:
+            return None
+        p = self.params
+        a = float(bars.atr(14)[i])
+        if a <= 0:
+            return None
+        e9, e21, e50, e200 = bars.ema(9), bars.ema(21), bars.ema(50), bars.ema(200)
+        r = bars.rsi(14)
+        c = float(bars.close[i])
+
+        bull = e9[i] > e21[i] > e50[i] > e200[i]
+        bear = e9[i] < e21[i] < e50[i] < e200[i]
+        rsi_ok = 35.0 <= r[i] <= 65.0
+
+        if bull and rsi_ok and bars.low[i] <= e21[i] * 1.001 and c > e21[i]:
+            sl = c - p["atr_mult"] * a
+            return Signal("buy", sl, c + p["rr"] * (c - sl),
+                          "4-EMA bull stack, RSI=%.0f, pullback to EMA21 rejected" % r[i],
+                          ("trend", "ema_stack", "with-trend"))
+        if bear and rsi_ok and bars.high[i] >= e21[i] * 0.999 and c < e21[i]:
+            sl = c + p["atr_mult"] * a
+            return Signal("sell", sl, c - p["rr"] * (sl - c),
+                          "4-EMA bear stack, RSI=%.0f, rally to EMA21 rejected" % r[i],
+                          ("trend", "ema_stack", "with-trend"))
+        return None
+
+
+class ConsolidationBreak(Strategy):
+    """Price coil: N-bar high-low span is tight vs ATR, then the market breaks.
+
+    If the high-low SPAN over the last `lookback` bars is less than
+    `span_atr_mult` × ATR (the market is coiled), the first real-body
+    close that exits the span is the entry signal — direction of the break
+    IS the trade. Stop is placed at 30% into the span from the broken side
+    (aggressive but inside structure); TP = rr × risk.
+    """
+    name = "consolidation_break"
+
+    def __init__(self, lookback: int = 8, span_atr_mult: float = 2.5,
+                 min_body_atr: float = 0.2, rr: float = 3.0):
+        self.params = {"lookback": lookback, "span_atr_mult": span_atr_mult,
+                       "min_body_atr": min_body_atr, "rr": rr}
+
+    def decide(self, bars: Bars, i: int) -> Signal | None:
+        if i < 60:
+            return None
+        p = self.params
+        a = float(bars.atr(14)[i])
+        if a <= 0:
+            return None
+        lb = p["lookback"]
+        span_hi = float(bars.high[i - lb:i].max())
+        span_lo = float(bars.low[i - lb:i].min())
+        span = span_hi - span_lo
+        if span > p["span_atr_mult"] * a:
+            return None  # wide range: not coiled
+        c, o = float(bars.close[i]), float(bars.open[i])
+        if abs(c - o) < p["min_body_atr"] * a:
+            return None  # doji/indecision: skip
+        if c > span_hi and c > o:
+            sl = span_lo + span * 0.3
+            return Signal("buy", sl, c + p["rr"] * (c - sl),
+                          "coil break up %.5f (span=%.5f < %.1f ATR)"
+                          % (span_hi, span, p["span_atr_mult"]),
+                          ("breakout", "compression"))
+        if c < span_lo and c < o:
+            sl = span_hi - span * 0.3
+            return Signal("sell", sl, c - p["rr"] * (sl - c),
+                          "coil break down %.5f (span=%.5f < %.1f ATR)"
+                          % (span_lo, span, p["span_atr_mult"]),
+                          ("breakout", "compression"))
+        return None
+
+
+class NYOpenMomentum(Strategy):
+    """New York open momentum on M15: first directional push into the NY session.
+
+    Builds the pre-NY (Asian/London) range from broker server hours
+    [h_range_start, h_range_end). In the entry window [h_entry, h_entry_end],
+    trades the FIRST close outside that range with a real body (no doji fakes).
+    Stop at range midpoint, TP 2.5 × risk. Most liquid time window; breakouts
+    here have the highest follow-through of any session.
+    """
+    name = "ny_open_momentum"
+    timeframe = "M15"
+
+    def __init__(self, h_range_start: int = 3, h_range_end: int = 8,
+                 h_entry: int = 9, h_entry_end: int = 12,
+                 min_body_atr: float = 0.25, rr: float = 2.5):
+        self.params = {"h_range_start": h_range_start, "h_range_end": h_range_end,
+                       "h_entry": h_entry, "h_entry_end": h_entry_end,
+                       "min_body_atr": min_body_atr, "rr": rr}
+
+    def decide(self, bars: Bars, i: int) -> Signal | None:
+        p = self.params
+        if i < 60:
+            return None
+        hour = bars.hour()
+        if not (p["h_entry"] <= hour[i] <= p["h_entry_end"]):
+            return None
+        a = float(bars.atr(14)[i])
+        if a <= 0:
+            return None
+        c, o = float(bars.close[i]), float(bars.open[i])
+        if abs(c - o) < p["min_body_atr"] * a:
+            return None  # doji / indecision
+
+        day = int(bars.time[i]) // 86400
+        idx = [j for j in range(max(0, i - 80), i)
+               if int(bars.time[j]) // 86400 == day
+               and p["h_range_start"] <= hour[j] < p["h_range_end"]]
+        if len(idx) < 4:
+            return None
+
+        import numpy as np
+        idx_arr = np.asarray(idx)
+        rng_hi = float(bars.high[idx_arr].max())
+        rng_lo = float(bars.low[idx_arr].min())
+        rng_mid = (rng_hi + rng_lo) / 2.0
+
+        if c > rng_hi and c > o:
+            sl = rng_mid
+            if c <= sl:
+                return None
+            return Signal("buy", sl, c + p["rr"] * (c - sl),
+                          "NY open momentum break above %.5f (body=%.5f)"
+                          % (rng_hi, abs(c - o)),
+                          ("session", "momentum"))
+        if c < rng_lo and c < o:
+            sl = rng_mid
+            if sl <= c:
+                return None
+            return Signal("sell", sl, c - p["rr"] * (sl - c),
+                          "NY open momentum break below %.5f (body=%.5f)"
+                          % (rng_lo, abs(c - o)),
+                          ("session", "momentum"))
+        return None
+
+
+class PivotBounce(Strategy):
+    """Swing structure bounce: trade rejection at confirmed pivot highs/lows.
+
+    A confirmed pivot high at j: high[j] is the maximum of [j-n, j+n] and
+    j+n bars have already closed (causal). In a downtrend (EMA50 falling),
+    sell when current bar touches the most-recent pivot high and closes back
+    below it. In an uptrend, buy at the pivot low. Stop behind the wick,
+    TP 2.5 × risk. Classic market-structure trade, zero curve-fitting.
+    """
+    name = "pivot_bounce"
+
+    def __init__(self, n: int = 5, lookback: int = 40,
+                 touch_atr: float = 0.5, atr_mult: float = 1.5, rr: float = 2.5):
+        self.params = {"n": n, "lookback": lookback, "touch_atr": touch_atr,
+                       "atr_mult": atr_mult, "rr": rr}
+
+    def _find_pivots(self, bars: Bars, i: int) -> tuple[list, list]:
+        p = self.params
+        n, lb = p["n"], p["lookback"]
+        highs, lows = [], []
+        lo_j = max(n, i - lb - n)
+        for j in range(i - n, lo_j, -1):
+            hi_j = float(bars.high[j])
+            lo_j_val = float(bars.low[j])
+            window_hi = bars.high[j - n:j + n + 1]
+            window_lo = bars.low[j - n:j + n + 1]
+            if len(window_hi) == 2 * n + 1 and hi_j == window_hi.max():
+                highs.append(hi_j)
+            if len(window_lo) == 2 * n + 1 and lo_j_val == window_lo.min():
+                lows.append(lo_j_val)
+        return highs, lows
+
+    def decide(self, bars: Bars, i: int) -> Signal | None:
+        p = self.params
+        if i < 60 + p["n"] * 2:
+            return None
+        a = float(bars.atr(14)[i])
+        if a <= 0:
+            return None
+        e50 = bars.ema(50)
+        c = float(bars.close[i])
+        touch = p["touch_atr"] * a
+        highs, lows = self._find_pivots(bars, i)
+
+        if highs and e50[i] < e50[max(0, i - 3)]:
+            ph = highs[0]
+            if bars.high[i] >= ph - touch and c < ph:
+                sl = float(bars.high[i]) + p["atr_mult"] * a
+                return Signal("sell", sl, c - p["rr"] * (sl - c),
+                              "rejected at pivot high %.5f in downtrend" % ph,
+                              ("structure", "resistance"))
+
+        if lows and e50[i] > e50[max(0, i - 3)]:
+            pl = lows[0]
+            if bars.low[i] <= pl + touch and c > pl:
+                sl = float(bars.low[i]) - p["atr_mult"] * a
+                if sl >= c:
+                    return None
+                return Signal("buy", sl, c + p["rr"] * (c - sl),
+                              "bounced at pivot low %.5f in uptrend" % pl,
+                              ("structure", "support"))
+        return None
+
+
 REGISTRY: dict[str, Strategy] = {
     s.name: s for s in (
         TrendPullback(), DonchianBreakout(), MeanRevBollinger(),
         FVGRetrace(), LiquiditySweep(), OrderBlockRetest(),
         LondonBreakout(), MomentumMACD(), RSI2MeanRev(), ScalpEMACross(),
+        EMAStackMomentum(), ConsolidationBreak(), NYOpenMomentum(), PivotBounce(),
     )
 }
 

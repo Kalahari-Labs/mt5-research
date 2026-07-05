@@ -68,6 +68,8 @@ BARS_BACKTEST = _get("MI_BARS_BACKTEST", 5000, int) # bars fetched for the gate
 # observe: full pipeline, journals every decision, sends NO orders.
 # trade:   sends orders for gate-passed combos (demo-guarded server-side anyway).
 EXEC_MODE = _get("MI_EXEC_MODE", "trade")
+HITL_MODE = _get("MI_HITL_MODE", False, bool)
+ALLOW_LIVE = _get("MI_ALLOW_LIVE", False, bool)
 MAGIC = _get("MI_MAGIC", 770001, int)               # tags every executor order
 
 # ---- risk (engine-side; bridge enforces its own caps too) -------------------
@@ -84,6 +86,8 @@ DISABLE_AFTER_LOSSES_7D = _get("MI_DISABLE_AFTER_LOSSES_7D", 5, int)
 NEWS_BLACKOUT_MIN = _get("MI_NEWS_BLACKOUT_MIN", 30, int)        # +/- minutes around high-impact
 MAX_HOLD_BARS = _get("MI_MAX_HOLD_BARS", 48, int)                # time-stop: swap drag killed the
 FRIDAY_FLAT_HOUR_UTC = _get("MI_FRIDAY_FLAT_HOUR_UTC", 19, int)  # research edge; cap the hold
+TRAILING_STOP_ATR_MULT = _get("MI_TRAILING_STOP_ATR_MULT", 2.0, float) # 0 to disable
+PARTIAL_EXIT_R_MULT = _get("MI_PARTIAL_EXIT_R_MULT", 1.5, float)       # 0 to disable; close 50% at this R
 
 # ---- costs (backtest side; live costs come from the broker's own deals) -------
 COMMISSION_PER_LOT = _get("MI_COMMISSION_PER_LOT", 0.0, float)   # account ccy per 1.0 lot PER SIDE

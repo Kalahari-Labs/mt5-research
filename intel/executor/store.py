@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS trades (
   status TEXT DEFAULT 'open',   -- open | closed
   entry_spread_points REAL, entry_atr REAL,
   timeframe TEXT,               -- decision timeframe of the strategy (H1, M15, ...)
+  partial_closed INTEGER DEFAULT 0, -- 1 if a partial TP was already taken
   context TEXT                  -- json: signal reason, regime, indicators at entry
 );
 CREATE TABLE IF NOT EXISTS decisions (
@@ -91,6 +92,19 @@ CREATE TABLE IF NOT EXISTS engine_state (
   value TEXT,
   updated TEXT
 );
+CREATE TABLE IF NOT EXISTS pending_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  strategy TEXT NOT NULL,
+  side TEXT NOT NULL,
+  volume REAL NOT NULL,
+  sl REAL, tp REAL,
+  reason TEXT,
+  detail TEXT,                  -- json: context/regime
+  status TEXT DEFAULT 'pending', -- pending | approved | denied | expired | executed
+  ts_created TEXT NOT NULL,
+  ts_expires TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions(ts);
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity_curve(ts);
@@ -112,6 +126,10 @@ class Store:
             self.conn.execute("ALTER TABLE trades ADD COLUMN timeframe TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
+        try:  # migration for DBs created before partial exits
+            self.conn.execute("ALTER TABLE trades ADD COLUMN partial_closed INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         self.conn.commit()
 
     # -- generic ---------------------------------------------------------------
@@ -166,6 +184,7 @@ class Store:
         params = (since,) if since else ()
         rows = self.query(f"SELECT pnl, r_multiple FROM trades {where}", params)
         pnls = [r["pnl"] for r in rows if r["pnl"] is not None]
+        rs = [r["r_multiple"] for r in rows if r["r_multiple"] is not None]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p <= 0]
         gross_win = sum(wins)
@@ -175,9 +194,42 @@ class Store:
             "win_rate": round(len(wins) / len(pnls) * 100, 1) if pnls else None,
             "pnl": round(sum(pnls), 2),
             "profit_factor": round(gross_win / gross_loss, 3) if gross_loss > 0 else None,
+            "avg_r": round(sum(rs) / len(rs), 3) if rs else None,
             "best": round(max(pnls), 2) if pnls else None,
             "worst": round(min(pnls), 2) if pnls else None,
         }
+
+    def streaks(self) -> dict:
+        """Win/loss streak stats from closed trade history (oldest-first)."""
+        rows = self.query(
+            "SELECT pnl FROM trades WHERE status='closed' ORDER BY exit_time ASC")
+        pnls = [r["pnl"] for r in rows if r["pnl"] is not None]
+        if not pnls:
+            return {"current": 0, "max_win": 0, "max_loss": 0, "total": 0}
+        max_win = cur_win = 0
+        max_loss = cur_loss = 0
+        for p in pnls:
+            if p > 0:
+                cur_win += 1
+                cur_loss = 0
+            else:
+                cur_loss += 1
+                cur_win = 0
+            max_win = max(max_win, cur_win)
+            max_loss = max(max_loss, cur_loss)
+        # current streak: positive = consecutive wins, negative = consecutive losses
+        cur_w = cur_l = 0
+        for p in reversed(pnls):
+            if p > 0:
+                if cur_l > 0:
+                    break
+                cur_w += 1
+            else:
+                if cur_w > 0:
+                    break
+                cur_l += 1
+        return {"current": cur_w if cur_w else -cur_l,
+                "max_win": max_win, "max_loss": max_loss, "total": len(pnls)}
 
 
 if __name__ == "__main__":

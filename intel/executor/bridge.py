@@ -97,8 +97,12 @@ class Bridge:
         return self._post("/order", {"symbol": symbol, "side": side, "volume": volume,
                                      "sl": sl, "tp": tp, "comment": comment, "magic": magic})
 
-    def close(self, ticket: int, comment: str = "mi-executor close") -> dict:
-        return self._post("/close", {"ticket": ticket, "comment": comment})
+    def close(self, ticket: int, comment: str = "mi-executor close",
+              volume: float | None = None) -> dict:
+        body: dict = {"ticket": ticket, "comment": comment}
+        if volume is not None:
+            body["volume"] = volume
+        return self._post("/close", body)
 
     def modify(self, ticket: int, sl: float | None = None, tp: float | None = None) -> dict:
         body: dict = {"ticket": ticket}
