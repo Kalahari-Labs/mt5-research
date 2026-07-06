@@ -20,9 +20,7 @@ from .store import Store, utcnow
 
 def api_gate_proximity(store: Store) -> list:
     """For every strategy×symbol, return gate metrics and distance to threshold."""
-    rows = store.query(
-        "SELECT strategy, symbol, status, reason, backtest FROM strategy_status "
-        "ORDER BY strategy, symbol")
+    rows = store.strategy_statuses()
     result = []
     for r in rows:
         bt: dict = {}
@@ -72,12 +70,36 @@ def api_summary(store: Store, bridge: Bridge) -> dict:
                          "login": h["account"]["login"], "server": h["account"]["server"]}
         out["account"] = {k: acct.get(k) for k in
                           ("balance", "equity", "margin", "margin_free", "profit",
-                           "currency", "leverage")}
-        out["positions"] = [
+                           "currency", "leverage", "margin_level")}
+        positions = [
             {k: p.get(k) for k in ("ticket", "symbol", "type", "volume",
                                    "price_open", "price_current", "sl", "tp",
                                    "profit", "swap", "comment")}
             for p in bridge.positions()]
+        # MT5's own positions_get() already marks each position to market
+        # (price_current) and carries live floating profit — this loop is a
+        # read-only safety net for the rare position that arrives without a
+        # price, nothing more. It mirrors the exact bid/ask convention
+        # bridge_server.py itself uses to price a close (buy marks to bid,
+        # sell marks to ask) so the number means the same thing everywhere.
+        # It deliberately does NOT synthesize `profit` — that needs contract
+        # size + currency conversion this dashboard doesn't have, and this
+        # module invents nothing; a missing profit stays None (renders as —).
+        ticks: dict = {}
+        for p in positions:
+            if p.get("price_current") is not None or not p.get("symbol"):
+                continue
+            sym = p["symbol"]
+            if sym not in ticks:
+                try:
+                    ticks[sym] = bridge.tick(sym)
+                except BridgeError:
+                    ticks[sym] = {}
+            t = ticks[sym]
+            px = t.get("bid") if p.get("type") == 0 else t.get("ask")
+            if px is not None:
+                p["price_current"] = px
+        out["positions"] = positions
     except BridgeError as e:
         out["bridge"] = {"up": False, "error": str(e)[:200]}
         out["account"] = None
@@ -100,36 +122,21 @@ def api_summary(store: Store, bridge: Bridge) -> dict:
 
 
 ROUTES = {
-    "/api/equity": lambda s, b: s.query(
-        "SELECT ts, equity, balance FROM equity_curve ORDER BY id DESC LIMIT 500")[::-1],
+    "/api/equity": lambda s, b: s.equity_curve(),
     # what the engine saw on each symbol at its last closed bar (regime, spread,
     # market state) — written by engine.symbol_view, invented nowhere
-    "/api/monitor": lambda s, b: [json.loads(r["value"]) for r in s.query(
-        "SELECT value FROM engine_state WHERE key LIKE 'symbol_view:%' ORDER BY key")],
-    "/api/combos": lambda s, b: s.query(
-        "SELECT strategy, symbol, COUNT(*) n, SUM(pnl>0) wins, "
-        "ROUND(SUM(pnl),2) pnl, ROUND(AVG(r_multiple),3) avg_r "
-        "FROM trades WHERE status='closed' AND pnl IS NOT NULL "
-        "GROUP BY strategy, symbol ORDER BY pnl DESC"),
-    "/api/decisions": lambda s, b: s.query(
-        "SELECT ts, symbol, strategy, action, side, reason FROM decisions "
-        "ORDER BY id DESC LIMIT 60"),
-    "/api/trades": lambda s, b: s.query(
-        "SELECT ticket, symbol, strategy, side, volume, entry_time, entry_price, "
-        "sl, tp, exit_time, exit_price, pnl, r_multiple, exit_reason, status "
-        "FROM trades ORDER BY id DESC LIMIT 60"),
-    "/api/strategies": lambda s, b: s.query(
-        "SELECT ts, strategy, symbol, status, reason, backtest FROM strategy_status "
-        "ORDER BY strategy, symbol"),
-    "/api/lessons": lambda s, b: s.query(
-        "SELECT ts, symbol, strategy, tag, lesson FROM lessons ORDER BY id DESC LIMIT 40"),
-    "/api/reports": lambda s, b: s.query(
-        "SELECT * FROM daily_reports ORDER BY date DESC LIMIT 14"),
-    "/api/calendar": lambda s, b: s.query(
-        "SELECT ts_event, currency, title FROM calendar_events "
-        "WHERE ts_event >= ? ORDER BY ts_event LIMIT 20", (utcnow(),)),
-    "/api/pending": lambda s, b: s.query(
-        "SELECT * FROM pending_trades WHERE status='pending' ORDER BY id DESC"),
+    "/api/monitor": lambda s, b: s.symbol_views(),
+    # active combo cooldowns (consecutive-loss protection) — another slice of
+    # "what the bot is thinking right now" alongside the symbol monitor
+    "/api/cooldowns": lambda s, b: s.cooldowns(),
+    "/api/combos": lambda s, b: s.combos(),
+    "/api/decisions": lambda s, b: s.recent_decisions(),
+    "/api/trades": lambda s, b: s.recent_trades(),
+    "/api/strategies": lambda s, b: s.strategy_statuses(),
+    "/api/lessons": lambda s, b: s.recent_lessons(),
+    "/api/reports": lambda s, b: s.daily_reports(),
+    "/api/calendar": lambda s, b: s.upcoming_events(),
+    "/api/pending": lambda s, b: s.pending_trades(),
     "/api/gate_proximity": lambda s, b: api_gate_proximity(s),
 }
 
@@ -146,6 +153,7 @@ h2 .badge{font-size:10px;padding:1px 6px;border-radius:10px;letter-spacing:0;tex
 .badge-ok{background:#123626;color:var(--green)}
 .badge-warn{background:#2a2417;color:var(--amber)}
 .badge-off{background:#1e2430;color:var(--dim)}
+.badge-bad{background:#3a1420;color:var(--red)}
 .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto}
 .wide{grid-column:1/-1}
@@ -164,7 +172,9 @@ td{padding:3px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
 #topline{margin-bottom:12px;display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
 #topline-left{flex:1}
 #topline-right{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px}
-canvas{width:100%;height:90px;display:block}
+#eq{width:100%;height:90px;display:block}
+#eq circle{pointer-events:all}
+#eq_legend{font-size:10px;margin-top:3px}
 .warn{background:#3a1420;border:1px solid var(--red);border-radius:8px;
 padding:8px 12px;margin-bottom:10px;color:#ffb3c0;font-size:12px}
 small{color:var(--dim);font-size:11px}
@@ -193,9 +203,10 @@ background:#1e2430;border-radius:3px;overflow:hidden;margin-left:4px}
 <div id="alerts"></div>
 <div class="grid">
 
-<div class="panel"><h2>Account</h2>
+<div class="panel"><h2>Account <span id="live_ind" class="badge badge-off">connecting&hellip;</span></h2>
 <div class="kpi" id="kpi_acct"></div>
-<canvas id="eq" width="640" height="90"></canvas></div>
+<svg id="eq"></svg>
+<div id="eq_legend" class="dim"></div></div>
 
 <div class="panel"><h2>Performance</h2>
 <div class="kpi" id="kpi_perf"></div>
@@ -204,6 +215,9 @@ background:#1e2430;border-radius:3px;overflow:hidden;margin-left:4px}
 
 <div class="panel"><h2>Discipline rules — enforced every cycle</h2>
 <div id="rules_panel"></div></div>
+
+<div class="panel"><h2>Cooldowns — combos paused after consecutive losses</h2>
+<table id="cooldowns"></table></div>
 
 <div class="panel wide" id="p_pending" style="display:none;border:1px solid var(--amber)">
 <h2>&#9888; Pending Approvals (HITL)</h2><table id="pending"></table></div>
@@ -223,6 +237,7 @@ background:#1e2430;border-radius:3px;overflow:hidden;margin-left:4px}
 const $=id=>document.getElementById(id);
 const fmt=(x,d=2)=>x==null?'&#8212;':Number(x).toFixed(d);
 const cls=x=>x==null?'dim':x>0?'pos':x<0?'neg':'dim';
+let lastGoodSummaryAt=null;   // Date.now() of the last successful /api/summary fetch
 async function j(u){const r=await fetch(u);if(!r.ok)throw new Error(r.status);return r.json()}
 function rows(el,head,data,f){
  el.innerHTML='<tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr>';
@@ -243,6 +258,8 @@ function streak_txt(n){
 async function tick(){
  try{
   const s=await j('/api/summary');
+  lastGoodSummaryAt=Date.now();
+  updateLiveBadge();
   const b=s.bridge||{};
   $('acct').textContent=b.up?(b.login?('· '+b.login+' @ '+b.server+(b.demo?' · DEMO':' · LIVE')):'· bridge up — terminal NOT LOGGED IN'):'· bridge DOWN';
 
@@ -262,10 +279,12 @@ async function tick(){
   $('alerts').innerHTML=alerts;
 
   const a=s.account;
+  const mlvl=(a&&a.margin_level!=null&&a.margin)?fmt(a.margin_level,1)+'%':'&#8212;';
   $('kpi_acct').innerHTML=a?[
    '<div class="kpi-item"><b>'+fmt(a.equity)+'</b><small>equity '+a.currency+'</small></div>',
    '<div class="kpi-item"><b>'+fmt(a.balance)+'</b><small>balance</small></div>',
    '<div class="kpi-item"><b class="'+cls(a.profit)+'">'+fmt(a.profit)+'</b><small>floating P&L</small></div>',
+   '<div class="kpi-item"><b>'+mlvl+'</b><small>margin level</small></div>',
    '<div class="kpi-item"><b><span class="dot" style="background:'+(fresh?'var(--green)':'var(--red)')+'"></span>'+
     'cycle '+(s.heartbeat?s.heartbeat.cycle:'?')+'</b><small>engine heartbeat</small></div>'
   ].join(''):'<div class="dim">no account data</div>';
@@ -325,6 +344,14 @@ async function tick(){
    '<td>'+(m.market_open?'<span class="pos">open</span>':'<span class="neg">closed</span>')+'</td>'+
    '<td class="dim">'+(m.ts||'').slice(5,16)+'</td></tr>');
   if(!mo.length)$('monitor').innerHTML+='<tr><td colspan="11" class="dim">no bar snapshots yet &#8212; engine warms up on the next closed bar</td></tr>';
+ }catch(e){}
+
+ try{
+  const cd=await j('/api/cooldowns');
+  rows($('cooldowns'),['strategy','symbol','until (UTC)'],cd,c=>
+   '<tr><td>'+c.strategy+'</td><td>'+c.symbol+'</td>'+
+   '<td class="amb">'+String(c.until).slice(0,19).replace('T',' ')+'</td></tr>');
+  if(!cd.length)$('cooldowns').innerHTML+='<tr><td colspan="3" class="dim">no active cooldowns</td></tr>';
  }catch(e){}
 
  try{
@@ -457,34 +484,64 @@ async function act(id,action){
 }
 
 function drawEq(eq){
- const c=$('eq'),x=c.getContext('2d');
- const W=c.clientWidth||640,H=c.clientHeight||90;
- c.width=W;c.height=H;
- x.clearRect(0,0,W,H);
- if(!eq||eq.length<2)return;
- const v=eq.map(p=>p.equity);
- const mn=Math.min(...v),mx=Math.max(...v),pad=(mx-mn)||1;
- const rising=v[v.length-1]>=v[0];
- // gradient fill
- const grad=x.createLinearGradient(0,0,0,H);
- grad.addColorStop(0,rising?'rgba(61,220,132,.18)':'rgba(255,84,112,.18)');
- grad.addColorStop(1,'rgba(0,0,0,0)');
- x.beginPath();
- v.forEach((y,i)=>{const px=i/(v.length-1)*(W-4)+2,py=H-8-((y-mn)/pad)*(H-18);
-  i?x.lineTo(px,py):x.moveTo(px,py)});
- x.lineTo(W-2,H);x.lineTo(2,H);x.closePath();
- x.fillStyle=grad;x.fill();
- // line
- x.beginPath();x.strokeStyle=rising?'#3ddc84':'#ff5470';x.lineWidth=1.5;
- v.forEach((y,i)=>{const px=i/(v.length-1)*(W-4)+2,py=H-8-((y-mn)/pad)*(H-18);
-  i?x.lineTo(px,py):x.moveTo(px,py)});
- x.stroke();
- x.fillStyle='#6b7686';x.font='10px monospace';
- x.fillText(fmt(v[v.length-1]),W-68,12);
- x.fillText(fmt(mn),4,H-2);
+ const svg=$('eq');
+ const W=svg.clientWidth||640,H=svg.clientHeight||90;
+ svg.setAttribute('viewBox','0 0 '+W+' '+H);
+ if(!eq||eq.length<2){
+  svg.innerHTML='<text x="4" y="'+Math.round(H/2)+'" fill="#6b7686" font-size="11">not enough equity history yet</text>';
+  $('eq_legend').textContent='';
+  return;
+ }
+ const n=eq.length;
+ const hasBal=eq.some(p=>p.balance!=null);
+ const vals=eq.map(p=>p.equity).concat(hasBal?eq.map(p=>p.balance).filter(v=>v!=null):[]);
+ const mn=Math.min(...vals),mx=Math.max(...vals),pad=(mx-mn)||1;
+ const X=i=>i/(n-1)*(W-4)+2;
+ const Y=v=>H-8-((v-mn)/pad)*(H-18);
+ const last=eq[n-1];
+ const rising=last.equity>=eq[0].equity;
+ const col=rising?'#3ddc84':'#ff5470';
+ const gradId='eqGrad'+Math.round(Math.random()*1e6);
+ const eqPts=eq.map((p,i)=>X(i)+','+Y(p.equity)).join(' ');
+ let out='<defs><linearGradient id="'+gradId+'" x1="0" y1="0" x2="0" y2="1">'+
+  '<stop offset="0%" stop-color="'+col+'" stop-opacity=".22"/>'+
+  '<stop offset="100%" stop-color="'+col+'" stop-opacity="0"/></linearGradient></defs>';
+ out+='<polygon points="2,'+H+' '+eqPts+' '+(W-2)+','+H+'" fill="url(#'+gradId+')" stroke="none"/>';
+ if(hasBal){
+  const balPts=eq.map((p,i)=>X(i)+','+Y(p.balance==null?p.equity:p.balance)).join(' ');
+  out+='<polyline points="'+balPts+'" fill="none" stroke="#6b7686" stroke-width="1" stroke-dasharray="3,2"/>';
+ }
+ out+='<polyline points="'+eqPts+'" fill="none" stroke="'+col+'" stroke-width="1.5"/>';
+ // hover targets — <title> gives a native tooltip with the timestamp, no JS listeners needed
+ const step=Math.max(1,Math.floor(n/80));
+ const idxs=new Set();
+ for(let i=0;i<n;i+=step)idxs.add(i);
+ idxs.add(n-1);
+ idxs.forEach(i=>{
+  const p=eq[i];
+  const label=p.ts+' — equity '+fmt(p.equity)+(hasBal?' / balance '+fmt(p.balance):'');
+  out+='<circle cx="'+X(i)+'" cy="'+Y(p.equity)+'" r="7" fill="transparent"><title>'+label+'</title></circle>';
+ });
+ out+='<text x="'+(W-4)+'" y="11" text-anchor="end" fill="#6b7686" font-size="10">'+fmt(last.equity)+'</text>';
+ out+='<text x="4" y="'+(H-3)+'" fill="#6b7686" font-size="10">'+fmt(mn)+'</text>';
+ if(hasBal)out+='<text x="4" y="11" fill="#6b7686" font-size="10">bal '+fmt(last.balance)+'</text>';
+ svg.innerHTML=out;
+ $('eq_legend').textContent=hasBal?'— solid: equity   - - dashed: balance':'';
+}
+
+function updateLiveBadge(){
+ const el=$('live_ind');
+ if(!el)return;
+ if(lastGoodSummaryAt==null){
+  el.className='badge badge-off';el.textContent='connecting…';return;
+ }
+ const secs=Math.max(0,Math.floor((Date.now()-lastGoodSummaryAt)/1000));
+ el.className='badge '+(secs<=15?'badge-ok':secs<=60?'badge-warn':'badge-bad');
+ el.textContent=(secs<=60?'live':'stale')+' · updated '+secs+'s ago';
 }
 
 tick();setInterval(tick,5000);
+updateLiveBadge();setInterval(updateLiveBadge,1000);
 </script></body></html>"""
 
 
