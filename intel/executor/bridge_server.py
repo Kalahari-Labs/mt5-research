@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -49,15 +48,42 @@ def log(msg: str) -> None:
     print("[bridge %s] %s" % (datetime.now(timezone.utc).strftime("%H:%M:%S"), msg), flush=True)
 
 
-def init_mt5() -> None:
+_LAST_REATTACH = 0.0
+REATTACH_MIN_SEC = 30.0
+
+
+def init_mt5() -> bool:
+    """Attach to the terminal. Safe to call repeatedly; True on success."""
     if not (mt5.initialize(timeout=60000) or mt5.initialize(path=TERMINAL, timeout=60000)):
-        log("FATAL initialize() failed: %s" % (mt5.last_error(),))
-        sys.exit(1)
+        log("initialize() failed: %s" % (mt5.last_error(),))
+        return False
     TIMEFRAMES.update({
         "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5, "M15": mt5.TIMEFRAME_M15,
         "M30": mt5.TIMEFRAME_M30, "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4,
         "D1": mt5.TIMEFRAME_D1, "W1": mt5.TIMEFRAME_W1,
     })
+    return True
+
+
+def ensure_mt5(force: bool = False) -> None:
+    """Self-heal a dead terminal attach. The MetaTrader5 IPC pipe silently dies
+    whenever the terminal restarts or re-logs in (e.g. switching accounts in
+    the UI); without this the bridge serves account=None forever — writes stay
+    refused and the dashboard goes stale until a human restarts the process.
+    Rate-limited so a genuinely logged-out terminal doesn't spin."""
+    global _LAST_REATTACH
+    if mt5.account_info() is not None:
+        return
+    now = time.monotonic()
+    if not force and now - _LAST_REATTACH < REATTACH_MIN_SEC:
+        return
+    _LAST_REATTACH = now
+    log("account_info() is None — re-attaching to terminal")
+    mt5.shutdown()
+    if init_mt5():
+        a = mt5.account_info()
+        log("re-attach: %s" % ("login %s @ %s" % (a.login, a.server)
+                               if a else "attached, terminal not logged in"))
 
 
 def account() -> dict | None:
@@ -266,6 +292,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         try:
+            ensure_mt5()
             if u.path == "/health":
                 a = account()
                 gate_ok, gate_reason = write_gate()
@@ -310,12 +337,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(n) or b"{}")
+            ensure_mt5()
             if self.path == "/order":
                 code, payload = do_order(body)
             elif self.path == "/close":
                 code, payload = do_close(body)
             elif self.path == "/modify":
                 code, payload = do_modify(body)
+            elif self.path == "/reinit":
+                # Maintenance (loopback-only server): force a fresh terminal
+                # attach. Read-side action — the write gate is untouched.
+                ensure_mt5(force=True)
+                a = account()
+                code, payload = 200, {"ok": a is not None,
+                                      "login": a and a["login"],
+                                      "server": a and a["server"]}
             else:
                 code, payload = 404, {"error": "unknown path %s" % self.path}
             self._send(code, payload)
@@ -324,18 +360,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    init_mt5()
+    # Serve even when the terminal is still booting or mid-login: ensure_mt5()
+    # re-attaches on demand, /health reports the truth, and write_gate fails
+    # closed meanwhile. A crash-exit here just made the supervisor loop.
+    if not init_mt5():
+        log("terminal attach failed at boot — serving anyway; re-attach on demand")
     a = mt5.account_info()
     if a is None:
-        log("FATAL: terminal not logged in")
-        sys.exit(1)
-    gate_ok, gate_reason = write_gate()
-    mode = {0: "DEMO", 1: "CONTEST", 2: "REAL"}.get(a.trade_mode, str(a.trade_mode))
-    log("account %s @ %s mode=%s balance=%.2f %s | writes: %s (%s)"
-        % (a.login, a.server, mode, a.balance, a.currency,
-           "ALLOWED" if gate_ok else "REFUSED", gate_reason))
-    if a.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO and not gate_ok:
-        log("REAL account without live unlock: serving READ-ONLY endpoints.")
+        log("terminal not logged in (yet): read-only until it is; writes fail closed")
+    else:
+        gate_ok, gate_reason = write_gate()
+        mode = {0: "DEMO", 1: "CONTEST", 2: "REAL"}.get(a.trade_mode, str(a.trade_mode))
+        log("account %s @ %s mode=%s balance=%.2f %s | writes: %s (%s)"
+            % (a.login, a.server, mode, a.balance, a.currency,
+               "ALLOWED" if gate_ok else "REFUSED", gate_reason))
+        if a.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO and not gate_ok:
+            log("REAL account without live unlock: serving READ-ONLY endpoints.")
     srv = HTTPServer((HOST, PORT), Handler)  # single-threaded: serializes MT5 calls
     log("serving on http://%s:%s" % (HOST, PORT))
     srv.serve_forever()

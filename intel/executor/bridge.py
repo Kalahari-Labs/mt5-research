@@ -118,6 +118,26 @@ class Bridge:
         except BridgeError:
             return False
 
+    def reachable(self) -> bool:
+        """HTTP answers at all (even ok:false). Distinguishes a half-dead
+        bridge — process up, terminal attach lost, fixable via /reinit — from
+        no bridge at all, which needs a spawn."""
+        try:
+            self.health()
+            return True
+        except BridgeError:
+            return False
+
+    def reinit(self) -> dict:
+        """Ask a half-dead bridge to re-attach to the terminal. Only a server
+        that implements /reinit answers with a `login` key (an old zombie 404s
+        into `{"error": ...}`, transport failure yields `{}`) — callers key on
+        that to decide between 'terminal problem' and 'replace the process'."""
+        try:
+            return self._post("/reinit", {})
+        except BridgeError:
+            return {}
+
 
 def _wine_path(linux_path: Path) -> str:
     return "Z:" + str(linux_path).replace("/", "\\")
@@ -170,8 +190,34 @@ def start_bridge(log_path: Path | None = None) -> subprocess.Popen:
         stdout=log_f, stderr=log_f, start_new_session=True)
 
 
+def kill_stale_bridge() -> None:
+    """Kill a bridge process that answers HTTP but can never recover (it
+    predates /reinit) or an orphan squatting the port with a dead terminal
+    attach — a fresh spawn cannot bind until it is gone. Matches the exact
+    server script in the cmdline, so the terminal, wineserver, and unrelated
+    tools are never touched."""
+    if IS_WINDOWS:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process | "
+             "Where-Object {$_.CommandLine -like '*bridge_server.py*'} | "
+             "ForEach-Object {Stop-Process -Id $_.ProcessId -Force}"],
+            capture_output=True)
+    else:
+        subprocess.run(["pkill", "-f", r"bridge_server\.py"], capture_output=True)
+    time.sleep(2)
+
+
 def ensure_bridge(timeout_sec: int = 120) -> Bridge:
-    """Idempotent: returns a healthy Bridge, booting terminal/bridge if needed."""
+    """Idempotent: returns a healthy Bridge, booting terminal/bridge if needed.
+
+    Escalation ladder when the bridge answers HTTP but reports ok:false (its
+    terminal attach died — happens whenever the terminal re-logs or restarts):
+      1. POST /reinit — cheap in-process re-attach.
+      2. If the server doesn't know /reinit (pre-self-heal zombie), kill it by
+         cmdline match and spawn a fresh one.
+      3. If /reinit worked but there is still no account, the terminal itself
+         is logged out — replacing the bridge cannot fix that, so say so."""
     b = Bridge()
     if b.alive():
         return b
@@ -186,6 +232,14 @@ def ensure_bridge(timeout_sec: int = 120) -> Bridge:
                           "(MI_BRIDGE_SPAWN=0 — start it on the bridge host)"
                           % (config.BRIDGE_URL, timeout_sec))
     start_terminal()
+    if b.reachable():
+        r = b.reinit()
+        if b.alive():
+            return b
+        if "login" in r:  # server understood /reinit — the terminal is the problem
+            raise BridgeError("bridge is up but the terminal has no account "
+                              "(logged out?): %s" % r)
+        kill_stale_bridge()
     start_bridge()
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
