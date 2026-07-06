@@ -134,6 +134,7 @@ MULTIPLE-TESTING COUNT: 34 distinct strategy+param config(s) have been evaluated
 - **Constant swap points across history** (same as Phase 4b/5): today's quote applied to the whole backtest. On old data the per-night charge is a distorted fraction of notional — worst on GOLD's early years. The FILTER inherits this: which side is 'adverse' is set by TODAY's quote, so the filter is effectively a constant side-mask per instrument (modulated only by the price level crossing the threshold).
 - **carry_z is a static cross-sectional constant** from one capture date. A live system would recompute it as brokers reprice swaps; no historical swap series exists to backtest that honestly.
 - **The composite's momentum leg is demeaned** (that is what a z-score is): sign(z(mom)) ≠ sign(mom), so B is not 'baseline + tilt' — it is a related but distinct momentum definition, pre-registered as such.
+- **The surface's carry axis is a structural no-op on EURUSD** (verifier finding): EURUSD's carry asymmetry (long −257, short +41 bps/yr) is extreme enough that X ∈ {0,50,100} never changes which side the filter allows, so the three columns are identical and the 27-cell plateau is really a 9-point lookback sweep tripled. The PLATEAU verdict holds on the 9-point basis (8/9 profitable); the portfolio OOS numbers are unaffected (the other four sleeves' carries do straddle the thresholds).
 - Same fill/cost model caveats as every prior phase (FILL_MODEL.md).
 
 

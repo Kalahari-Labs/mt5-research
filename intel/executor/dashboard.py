@@ -8,6 +8,7 @@ says so instead of showing stale numbers.
 from __future__ import annotations
 
 import json
+import math
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -243,7 +244,7 @@ async function tick(){
  try{
   const s=await j('/api/summary');
   const b=s.bridge||{};
-  $('acct').textContent=b.up?('&#183; '+b.login+' @ '+b.server+(b.demo?' &#183; DEMO':' &#183; LIVE')):'&#183; bridge DOWN';
+  $('acct').textContent=b.up?(b.login?('· '+b.login+' @ '+b.server+(b.demo?' · DEMO':' · LIVE')):'· bridge up — terminal NOT LOGGED IN'):'· bridge DOWN';
 
   const fresh=s.heartbeat&&(Date.now()-Date.parse(s.heartbeat.ts))<120000;
   $('badge_mode').className='badge '+(s.mode==='trade'?'badge-ok':'badge-warn');
@@ -285,8 +286,8 @@ async function tick(){
   ].join('');
 
   const f=s.forward_test;
-  $('fwd').textContent=f?('forward test day '+f.day+' of 90 &#183; started '+f.start+
-   ' @ '+fmt(f.start_equity)+(f.return_pct==null?'':' &#183; '+(f.return_pct>=0?'+':'')+f.return_pct+'% since start')):'';
+  $('fwd').textContent=f?('forward test day '+f.day+' of 90 · started '+f.start+
+   ' @ '+fmt(f.start_equity)+(f.return_pct==null?'':' · '+(f.return_pct>=0?'+':'')+f.return_pct+'% since start')):'';
 
   const ru=s.rules||{};
   $('rules_panel').innerHTML=[
@@ -438,8 +439,8 @@ async function tick(){
     return '<tr><td><b>'+p.symbol+'</b></td><td>'+'&#11088;'.repeat(ctx.stars||1)+'</td>'+
      '<td class="'+(p.side==='buy'?'pos':'neg')+'">'+p.side.toUpperCase()+'</td>'+
      '<td>'+p.volume+'</td><td>'+p.sl+'</td><td>'+p.tp+'</td><td>'+p.reason+'</td>'+
-     '<td><button class="btn btn-ok" onclick="act('+p.id+',\'approve\')">APPROVE</button>'+
-     '<button class="btn btn-no" onclick="act('+p.id+',\'deny\')">DENY</button></td></tr>';
+     '<td><button class="btn btn-ok" onclick="act('+p.id+',\\'approve\\')">APPROVE</button>'+
+     '<button class="btn btn-no" onclick="act('+p.id+',\\'deny\\')">DENY</button></td></tr>';
    });
   }else{$('p_pending').style.display='none'}
  }catch(e){}
@@ -501,6 +502,21 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    @staticmethod
+    def _json_safe(o):
+        """json.dumps emits Infinity/NaN for non-finite floats — that is NOT
+        valid JSON and the browser's JSON.parse rejects the whole payload (an
+        all-win combo's OOS profit factor is float('inf'), which blanked the
+        gate-proximity panel). Replace non-finite floats with None; the
+        frontend already renders null as an em-dash."""
+        if isinstance(o, float):
+            return o if math.isfinite(o) else None
+        if isinstance(o, dict):
+            return {k: Handler._json_safe(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [Handler._json_safe(v) for v in o]
+        return o
+
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -531,10 +547,12 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/favicon.ico":
                 self._send(200, b"", "image/x-icon")
             elif self.path == "/api/summary":
-                self._send(200, json.dumps(api_summary(self.store, self.bridge)).encode(),
+                self._send(200, json.dumps(self._json_safe(
+                    api_summary(self.store, self.bridge))).encode(),
                            "application/json")
             elif self.path in ROUTES:
-                self._send(200, json.dumps(ROUTES[self.path](self.store, self.bridge)).encode(),
+                self._send(200, json.dumps(self._json_safe(
+                    ROUTES[self.path](self.store, self.bridge))).encode(),
                            "application/json")
             else:
                 self._send(404, b'{"error":"not found"}', "application/json")

@@ -430,6 +430,13 @@ def build_phase6_md(carry, baseline_full, baseline_wf, surface, results, decomp_
     L.append("- **The composite's momentum leg is demeaned** (that is what a z-score is): "
              "sign(z(mom)) ≠ sign(mom), so B is not 'baseline + tilt' — it is a related "
              "but distinct momentum definition, pre-registered as such.")
+    L.append("- **The surface's carry axis is a structural no-op on EURUSD** (verifier "
+             "finding): EURUSD's carry asymmetry (long −257, short +41 bps/yr) is extreme "
+             "enough that X ∈ {0,50,100} never changes which side the filter allows, so "
+             "the three columns are identical and the 27-cell plateau is really a 9-point "
+             "lookback sweep tripled. The PLATEAU verdict holds on the 9-point basis "
+             "(8/9 profitable); the portfolio OOS numbers are unaffected (the other four "
+             "sleeves' carries do straddle the thresholds).")
     L.append("- Same fill/cost model caveats as every prior phase (FILL_MODEL.md).\n")
 
     L.append("\n## Verdict\n")
