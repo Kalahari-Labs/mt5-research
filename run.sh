@@ -29,5 +29,6 @@ case "${1:-trade}" in
   check)   exec python3 -m executor.onboard ;;
   gate)    exec python3 -m executor.gate ;;
   observe) MI_EXEC_MODE=observe exec python3 -m executor.run ;;
+  vault)   shift; cd ..; exec python3 tools/vault.py "$@" ;;
   trade|*) exec python3 -m executor.run ;;
 esac
