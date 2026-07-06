@@ -92,22 +92,20 @@ class Engine:
             exit_reason = DEAL_REASON.get(last.get("reason", -1), "manual")
             risk_amt = abs(t["entry_price"] - t["sl"]) * self.spec(t["symbol"]).unit_value * t["volume"] \
                 if t.get("sl") else None
-            r_mult = (pnl + swap + comm) / risk_amt if risk_amt else None
-            self.store.execute(
-                "UPDATE trades SET status='closed', exit_time=?, exit_price=?, pnl=?, "
-                "swap=?, commission=?, r_multiple=?, exit_reason=? WHERE id=?",
-                (datetime.fromtimestamp(last.get("time", time.time()), tz=timezone.utc)
-                 .strftime("%Y-%m-%dT%H:%M:%SZ"),
-                 last.get("price"), pnl + swap + comm, swap, comm, r_mult,
-                 exit_reason, t["id"]))
+            net = pnl + swap + comm
+            r_mult = net / risk_amt if risk_amt else None
+            exit_time = (datetime.fromtimestamp(last.get("time", time.time()), tz=timezone.utc)
+                         .strftime("%Y-%m-%dT%H:%M:%SZ"))
+            self.store.close_trade(t["id"], exit_time=exit_time, exit_price=last.get("price"),
+                                   pnl=net, swap=swap, commission=comm,
+                                   r_multiple=r_mult, exit_reason=exit_reason)
             self.store.decide("exit", "broker closed #%s (%s) pnl=%.2f"
-                              % (t["ticket"], exit_reason, pnl + swap + comm),
+                              % (t["ticket"], exit_reason, net),
                               symbol=t["symbol"], strategy=t["strategy"])
             log("closed #%s %s %s pnl=%.2f (%s)"
-                % (t["ticket"], t["symbol"], t["strategy"], pnl + swap + comm, exit_reason))
-            notify.trade_closed(t["symbol"], t["strategy"], pnl + swap + comm,
-                                exit_reason, t["ticket"])
-            trade = self.store.query("SELECT * FROM trades WHERE id=?", (t["id"],))[0]
+                % (t["ticket"], t["symbol"], t["strategy"], net, exit_reason))
+            notify.trade_closed(t["symbol"], t["strategy"], net, exit_reason, t["ticket"])
+            trade = self.store.trade(t["id"])
             tags = review.on_trade_closed(self.store, self.bridge, trade)
             if tags:
                 log("review #%s -> %s" % (t["ticket"], ",".join(tags)))
@@ -159,7 +157,7 @@ class Engine:
                 try:
                     res = self.bridge.modify(t["ticket"], sl=round(new_sl, spec.digits))
                     if res.get("ok"):
-                        self.store.execute("UPDATE trades SET sl=? WHERE id=?", (new_sl, t["id"]))
+                        self.store.update_trade_sl(t["id"], new_sl)
                         log("TRAIL #%s %s sl -> %.5f" % (t["ticket"], t["symbol"], new_sl))
                 except BridgeError: pass
 
@@ -185,7 +183,7 @@ class Engine:
                     try:
                         res = self.bridge.close(t["ticket"], volume=half_vol, comment="partial_tp")
                         if res.get("ok"):
-                            self.store.execute("UPDATE trades SET partial_closed=1 WHERE id=?", (t["id"],))
+                            self.store.mark_partial_closed(t["id"])
                             log("PARTIAL TP #%s %s closed %.2f lots at %.1fR" % (t["ticket"], t["symbol"], half_vol, cur_r))
                             notify.trade_closed(t["symbol"], t["strategy"], 0.0, "partial_tp", t["ticket"])
                     except BridgeError: pass
@@ -373,7 +371,7 @@ class Engine:
 
     def execute_approved_trades(self, account: dict) -> None:
         """Check for human-approved trades and send them to the bridge."""
-        pending = self.store.query("SELECT * FROM pending_trades WHERE status='approved'")
+        pending = self.store.pending_trades("approved")
         for p in pending:
             try:
                 # Re-verify risk halts before executing an old approval
@@ -391,11 +389,11 @@ class Engine:
                 if self.place(p["symbol"], p["strategy"], ctx.get("timeframe", config.TIMEFRAME),
                               sig, ctx.get("regime", {}), account, spec,
                               live_spread, ctx.get("median_spread_pts", 0.0)):
-                    self.store.execute("UPDATE pending_trades SET status='executed' WHERE id=?", (p["id"],))
+                    self.store.set_pending_status(p["id"], "executed")
             except Exception as e:
                 log("failed to execute approved trade #%s: %r" % (p["id"], e))
-                self.store.execute("UPDATE pending_trades SET status='denied', reason=? WHERE id=?",
-                                   ("exec error: %s" % str(e)[:50], p["id"]))
+                self.store.set_pending_status(p["id"], "denied",
+                                              reason="exec error: %s" % str(e)[:50])
 
     def snapshot(self, account: dict) -> None:
         if self.store.get_state("forward_test_start") is None:

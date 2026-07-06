@@ -13,7 +13,7 @@ are `@runtime_checkable` Protocols, so existing classes satisfy them AS-IS —
 """
 from __future__ import annotations
 
-from .broker import BrokerAdapter, OrderResult
+from .broker import AccountHealth, BrokerAdapter, DealRow, HealthReport, OrderResult
 from .decision import Action, Decision
 from .market_data import MarketDataProvider
 from .risk import RiskManager, RiskVerdict
@@ -23,6 +23,9 @@ __all__ = [
     "MarketDataProvider",
     "BrokerAdapter",
     "OrderResult",
+    "DealRow",
+    "HealthReport",
+    "AccountHealth",
     "RiskManager",
     "RiskVerdict",
     "Strategy",

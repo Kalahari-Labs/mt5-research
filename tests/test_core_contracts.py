@@ -8,6 +8,7 @@ is how `core/` governs the code without rewriting it (docs/ARCHITECTURE.md §5).
 They also validate the two net-new value objects (`Recommendation`, `Decision`)
 that Phases 5-6 will produce.
 """
+import inspect
 import os
 import sys
 import types
@@ -89,6 +90,54 @@ class TestContractsRejectNonConformers(unittest.TestCase):
             def account(self): ...
             def positions(self, symbol=None): ...
         self.assertNotIsInstance(HalfBroker(), core.BrokerAdapter)
+
+    def test_broker_missing_reconciliation_or_health_is_rejected(self):
+        """A broker that can trade but cannot report deal history or health is
+        NOT a BrokerAdapter — the engine's reconcile step and startup banner
+        depend on both, so the contract now requires them."""
+        class NoHistoryBroker:
+            def account(self): ...
+            def positions(self, symbol=None): ...
+            def order(self, symbol, side, volume, sl, tp, comment="", magic=0): ...
+            def close(self, ticket, comment="", volume=None): ...
+            def modify(self, ticket, sl=None, tp=None): ...
+            def alive(self): ...
+            def health(self): ...
+            # no history_deals -> must be rejected
+        self.assertNotIsInstance(NoHistoryBroker(), core.BrokerAdapter)
+
+    def test_market_data_missing_symbol_is_rejected(self):
+        """bars + tick without symbol metadata cannot size an order, so it is
+        not a MarketDataProvider."""
+        class NoSymbolFeed:
+            def bars(self, symbol, tf="H1", count=300, start=0): ...
+            def tick(self, symbol): ...
+            # no symbol() -> must be rejected
+        self.assertNotIsInstance(NoSymbolFeed(), core.MarketDataProvider)
+
+
+class TestContractMatchesBridgeReality(unittest.TestCase):
+    """Signature-level teeth: runtime_checkable only checks method NAMES, so
+    these guard the parameters the engine actually passes (a partial close, a
+    dated deal-history query) that isinstance alone cannot see."""
+
+    def test_broker_close_accepts_partial_volume(self):
+        """engine.manage_partials calls close(ticket, volume=half). Both the
+        contract and the live Bridge must accept `volume`, or partial
+        take-profits break silently under a Phase-2 adapter."""
+        for target in (core.BrokerAdapter.close, _bridge_class().close):
+            with self.subTest(target=target):
+                self.assertIn("volume", inspect.signature(target).parameters)
+
+    def test_broker_history_deals_accepts_days(self):
+        for target in (core.BrokerAdapter.history_deals, _bridge_class().history_deals):
+            with self.subTest(target=target):
+                self.assertIn("days", inspect.signature(target).parameters)
+
+
+def _bridge_class():
+    bridge, _ = _import_executor()
+    return bridge.Bridge
 
 
 class TestRecommendationValueObject(unittest.TestCase):

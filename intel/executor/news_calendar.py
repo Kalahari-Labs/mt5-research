@@ -47,13 +47,10 @@ def refresh(store: Store) -> int:
             ts = datetime.fromisoformat(ev["date"]).astimezone(timezone.utc)
         except (KeyError, ValueError):
             continue
-        before = store.conn.total_changes
-        store.insert("calendar_events", {
-            "ts_event": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "currency": ev.get("country", ""),
-            "impact": "high",
-            "title": ev.get("title", "")})
-        n += store.conn.total_changes - before
+        if store.insert_calendar_event(
+                ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                ev.get("country", ""), ev.get("title", "")):
+            n += 1
     store.set_state("calendar_last_refresh", utcnow())
     return n
 
@@ -67,11 +64,7 @@ def blackout(store: Store, symbol: str, now_utc: datetime | None = None) -> str 
     pad = config.NEWS_BLACKOUT_MIN * 60
     lo = datetime.fromtimestamp(now.timestamp() - pad, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     hi = datetime.fromtimestamp(now.timestamp() + pad, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    marks = ",".join("?" * len(currencies))
-    rows = store.query(
-        f"SELECT currency, title, ts_event FROM calendar_events "
-        f"WHERE impact='high' AND currency IN ({marks}) AND ts_event BETWEEN ? AND ?",
-        tuple(currencies) + (lo, hi))
+    rows = store.events_in_window(currencies, lo, hi)
     if rows:
         r = rows[0]
         return "%s %s @ %s" % (r["currency"], r["title"], r["ts_event"])

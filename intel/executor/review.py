@@ -140,10 +140,7 @@ def on_trade_closed(store: Store, bridge: Bridge, trade: dict) -> list[str]:
                 {"until": until})
 
     week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    losses_7d = store.query(
-        "SELECT COUNT(*) AS c FROM trades WHERE strategy=? AND symbol=? "
-        "AND status='closed' AND exit_time >= ? AND pnl <= 0",
-        (trade["strategy"], trade["symbol"], week_ago))[0]["c"]
+    losses_7d = store.count_losses_since(trade["strategy"], trade["symbol"], week_ago)
     if losses_7d >= config.DISABLE_AFTER_LOSSES_7D:
         store.insert("strategy_status", {
             "ts": utcnow(), "strategy": trade["strategy"], "symbol": trade["symbol"],
@@ -172,32 +169,26 @@ def htf_context(bridge: Bridge, symbol: str) -> dict:
 def build_daily_report(store: Store, date: str | None = None) -> dict:
     date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     lo, hi = date + "T00:00:00Z", date + "T23:59:59Z"
-    rows = store.query(
-        "SELECT pnl FROM trades WHERE status='closed' AND exit_time BETWEEN ? AND ?",
-        (lo, hi))
-    pnls = [r["pnl"] for r in rows if r["pnl"] is not None]
-    eq = store.query(
-        "SELECT equity FROM equity_curve WHERE ts BETWEEN ? AND ? ORDER BY id", (lo, hi))
+    pnls = store.closed_pnls_between(lo, hi)
+    eq = store.equity_between(lo, hi)
     wins = [p for p in pnls if p > 0]
     report = {
         "date": date, "trades": len(pnls), "wins": len(wins),
         "losses": len(pnls) - len(wins),
         "pnl": round(sum(pnls), 2),
         "win_rate": round(len(wins) / len(pnls) * 100, 1) if pnls else None,
-        "equity_open": eq[0]["equity"] if eq else None,
-        "equity_close": eq[-1]["equity"] if eq else None,
+        "equity_open": eq[0] if eq else None,
+        "equity_close": eq[-1] if eq else None,
         "best_trade": round(max(pnls), 2) if pnls else None,
         "worst_trade": round(min(pnls), 2) if pnls else None,
     }
-    lessons = store.query(
-        "SELECT tag, COUNT(*) AS c FROM lessons WHERE ts BETWEEN ? AND ? "
-        "GROUP BY tag ORDER BY c DESC", (lo, hi))
+    lessons = store.lesson_counts_between(lo, hi)
     summary = "%s: %s trades, %s wins, pnl %.2f." % (
         date, report["trades"], report["wins"], report["pnl"])
     if lessons:
         summary += " Lessons: " + ", ".join("%s x%s" % (l["tag"], l["c"]) for l in lessons)
     report["summary"] = summary
-    store.execute("DELETE FROM daily_reports WHERE date=?", (date,))
+    store.delete_daily_report(date)
     store.insert("daily_reports", report)
     return report
 

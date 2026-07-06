@@ -254,7 +254,8 @@ async function tick(){
 
   let alerts='';
   if(!b.up)alerts+='<div class="warn">MT5 bridge is DOWN &#8212; engine cannot see or trade the market.</div>';
-  if(b.up&&!b.demo)alerts+='<div class="warn">Account is NOT a demo account. Writes: '+(b.writes_allowed?'UNLOCKED (live!)':'refused')+'</div>';
+  if(b.up&&!b.login)alerts+='<div class="warn">Bridge is up but the terminal is NOT LOGGED IN &#8212; re-attaching automatically; writes fail closed until then.</div>';
+  if(b.up&&b.login&&!b.demo)alerts+='<div class="warn">Account is NOT a demo account. Writes: '+(b.writes_allowed?'UNLOCKED (live!)':'refused')+'</div>';
   if(s.kill_switch)alerts+='<div class="warn">KILL SWITCH active &#8212; engine flattening/halted.</div>';
   if(s.manual_halt)alerts+='<div class="warn">HALT: '+s.manual_halt+'</div>';
   if(s.halted_for_day)alerts+='<div class="warn">Daily loss limit hit &#8212; no new entries today.</div>';

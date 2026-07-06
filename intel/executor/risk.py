@@ -58,11 +58,8 @@ def check_halts(store: Store, account: dict) -> None:
 
     # daily loss: compare with equity at day open (first snapshot today)
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    row = store.query(
-        "SELECT equity FROM equity_curve WHERE ts >= ? ORDER BY id ASC LIMIT 1",
-        (day + "T00:00:00Z",))
-    if row:
-        day_open = float(row[0]["equity"])
+    day_open = store.day_open_equity(day)
+    if day_open is not None:
         loss_pct = (day_open - equity) / day_open * 100.0
         if loss_pct >= config.MAX_DAILY_LOSS_PCT:
             store.set_state("halted_for_day", day)
@@ -103,13 +100,11 @@ def check_entry(store: Store, symbol: str, strategy: str,
         if datetime.now(timezone.utc) < until:
             raise Veto("cooldown until %s after consecutive losses" % cd)
 
-    status_rows = store.query(
-        "SELECT status, reason FROM strategy_status WHERE strategy=? AND symbol=?",
-        (strategy, symbol))
-    if not status_rows or status_rows[0]["status"] != "enabled":
-        st = status_rows[0]["status"] if status_rows else "unknown"
+    status_row = store.strategy_status(strategy, symbol)
+    if not status_row or status_row["status"] != "enabled":
+        st = status_row["status"] if status_row else "unknown"
         raise Veto("combo is %s (gate: %s)" % (
-            st, status_rows[0]["reason"] if status_rows else "never evaluated"))
+            st, status_row["reason"] if status_row else "never evaluated"))
 
     if atr > 0 and live_spread > config.MAX_SPREAD_ATR_FRAC * atr:
         raise Veto("spread %.5f > %.0f%% of ATR %.5f"

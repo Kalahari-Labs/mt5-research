@@ -25,3 +25,10 @@ class MarketDataProvider(Protocol):
     def tick(self, symbol: str) -> dict[str, Any]:
         """Latest tick, e.g. `{"time", "bid", "ask", "last"}`."""
         ...
+
+    def symbol(self, name: str) -> dict[str, Any]:
+        """Instrument metadata: point, digits, contract size, and volume
+        constraints (min/step/max). The executor feeds this straight into
+        `SymbolSpec.from_bridge` to size orders, so a provider that cannot serve
+        it cannot back a trading engine."""
+        ...
