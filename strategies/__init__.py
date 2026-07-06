@@ -10,6 +10,7 @@ from .base import Strategy, Signals
 from .sma_crossover import SmaCrossover
 from .buy_and_hold import BuyAndHold
 from .ts_momentum import TsMomentum
+from .carry_momentum import CarryMomentum
 
 _REGISTRY: dict[str, Strategy] = {}
 
@@ -36,3 +37,4 @@ def all_names() -> list[str]:
 register(SmaCrossover())
 register(BuyAndHold())
 register(TsMomentum())
+register(CarryMomentum())
