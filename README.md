@@ -1,7 +1,17 @@
 # 📋 Full Repository Documentation — `mt5-research`
 
 > **Kalahari Labs · market-intel executor + research harness**
-> Audit date: 2026-07-04 · **114/114 tests passing** ✅
+> Audit date: 2026-07-06 · **156/156 tests passing** ✅
+
+---
+
+## Website & contributing
+
+The project site — architecture, safety model, and the honest research
+verdicts — lives in [`/web`](web/) and deploys to Vercel. Want to contribute
+code, a new strategy brief, or a bug fix? Start with
+[CONTRIBUTING.md](CONTRIBUTING.md) for branch rules, test discipline, and the
+research-registry workflow.
 
 ---
 
