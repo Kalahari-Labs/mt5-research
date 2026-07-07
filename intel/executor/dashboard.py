@@ -12,6 +12,7 @@ import math
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from . import config
 from .bridge import Bridge, BridgeError
@@ -42,8 +43,53 @@ def api_gate_proximity(store: Store) -> list:
     return result
 
 
+# timeframes the chart panel may request; the bridge validates again server-side
+CHART_TFS = ("M5", "M15", "M30", "H1", "H4", "D1")
+
+
+def parse_chart_query(path: str) -> tuple[str, str, int]:
+    """Validate /api/chart params. Symbol is whitelisted against the symbols
+    the engine actually trades, tf against CHART_TFS, count clamped — the
+    dashboard never forwards arbitrary strings to the bridge."""
+    q = parse_qs(urlparse(path).query)
+    symbol = q.get("symbol", [config.SYMBOLS[0]])[0]
+    if symbol not in config.SYMBOLS:
+        raise ValueError("symbol must be one of %s" % ",".join(config.SYMBOLS))
+    tf = q.get("tf", ["M15"])[0]
+    if tf not in CHART_TFS:
+        raise ValueError("tf must be one of %s" % ",".join(CHART_TFS))
+    count = max(20, min(int(q.get("count", ["180"])[0]), 500))
+    return symbol, tf, count
+
+
+def api_chart(store: Store, bridge: Bridge, symbol: str, tf: str,
+              count: int) -> dict:
+    """Everything the price-chart panel needs in one payload: raw bars from
+    the MT5 bridge plus overlays (open positions, journaled trades, pending
+    HITL proposals) — all read from the bridge or SQLite, computed nowhere."""
+    out: dict = {"symbol": symbol, "tf": tf, "bars": [], "positions": [],
+                 "trades": [], "pending": []}
+    try:
+        out["bars"] = bridge.bars(symbol, tf, count)
+    except BridgeError as e:
+        out["error"] = str(e)[:200]
+        return out
+    try:
+        out["positions"] = [
+            {k: p.get(k) for k in ("ticket", "type", "volume", "price_open",
+                                   "price_current", "sl", "tp", "profit")}
+            for p in bridge.positions() if p.get("symbol") == symbol]
+    except BridgeError:
+        pass
+    out["trades"] = store.trades_for_chart(symbol)
+    out["pending"] = [p for p in store.pending_trades()
+                      if p.get("symbol") == symbol]
+    return out
+
+
 def api_summary(store: Store, bridge: Bridge) -> dict:
     out: dict = {"ts": utcnow(), "mode": config.EXEC_MODE,
+                 "symbols": config.SYMBOLS,
                  "kill_switch": config.KILL_SWITCH.exists(),
                  "manual_halt": store.get_state("manual_halt"),
                  "halted_for_day": store.get_state("halted_for_day"),
@@ -188,6 +234,11 @@ background:#1e2430;border-radius:3px;overflow:hidden;margin-left:4px}
 .rule-row{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid var(--line);font-size:12px}
 .rule-row:last-child{border-bottom:none}
 .rule-val{color:var(--txt);font-weight:bold}
+.cbtn{cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--dim);
+border-radius:4px;padding:2px 9px;font-size:11px;margin-right:3px;font-family:inherit}
+.cbtn.on{background:#123626;color:var(--green);border-color:var(--green)}
+.cbtn:hover{color:var(--txt)}
+#chart{width:100%;height:280px;display:block;background:#0d1119;border-radius:6px}
 </style></head><body>
 <div id="topline">
  <div id="topline-left">
@@ -222,6 +273,11 @@ background:#1e2430;border-radius:3px;overflow:hidden;margin-left:4px}
 <div class="panel wide" id="p_pending" style="display:none;border:1px solid var(--amber)">
 <h2>&#9888; Pending Approvals (HITL)</h2><table id="pending"></table></div>
 
+<div class="panel wide"><h2>Price chart &#8212; live from MT5 <span id="chart_meta" class="badge badge-off">loading&hellip;</span></h2>
+<div id="chart_ctl" style="margin-bottom:8px"></div>
+<svg id="chart"></svg>
+<div id="chart_legend" style="font-size:10px;margin-top:4px;color:var(--dim)"></div></div>
+
 <div class="panel wide"><h2>Open positions (live from bridge)</h2><table id="positions"></table></div>
 <div class="panel wide"><h2>Symbol monitor — what the engine sees right now</h2><table id="monitor"></table></div>
 <div class="panel wide"><h2>Gate proximity — OOS performance vs threshold</h2><table id="gate_prox"></table></div>
@@ -238,6 +294,7 @@ const $=id=>document.getElementById(id);
 const fmt=(x,d=2)=>x==null?'&#8212;':Number(x).toFixed(d);
 const cls=x=>x==null?'dim':x>0?'pos':x<0?'neg':'dim';
 let lastGoodSummaryAt=null;   // Date.now() of the last successful /api/summary fetch
+let chartSym=null,chartTf='M15',chartSyms=[],chartBusy=false;
 async function j(u){const r=await fetch(u);if(!r.ok)throw new Error(r.status);return r.json()}
 function rows(el,head,data,f){
  el.innerHTML='<tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr>';
@@ -323,6 +380,13 @@ async function tick(){
    ['Partial exit','<span class="rule-val">'+(ru.partial_exit_r>0?'50% off at '+ru.partial_exit_r+'R':'off')+'</span>'],
   ].map(([k,v])=>'<div class="rule-row"><span class="dim">'+k+'</span>'+v+'</div>').join('');
 
+  if(!chartSyms.length&&s.symbols&&s.symbols.length){
+   chartSyms=s.symbols;
+   // default to the symbol with an open position, else the first configured
+   chartSym=(s.positions&&s.positions[0]&&chartSyms.indexOf(s.positions[0].symbol)>=0)?s.positions[0].symbol:chartSyms[0];
+   chartCtl();
+  }
+
   rows($('positions'),['ticket','symbol','side','lots','open','now','sl','tp','P&L','swap'],
    s.positions,px=>'<tr><td>'+px.ticket+'</td><td>'+px.symbol+'</td><td class="'+(px.type===0?'pos':'neg')+'">'+(px.type===0?'buy':'sell')+
    '</td><td>'+px.volume+'</td><td>'+px.price_open+'</td><td>'+px.price_current+'</td><td>'+px.sl+
@@ -333,6 +397,8 @@ async function tick(){
  try{
   const eq=await j('/api/equity');drawEq(eq);
  }catch(e){}
+
+ loadChart();
 
  try{
   const mo=await j('/api/monitor');
@@ -462,11 +528,18 @@ async function tick(){
   const pe=await j('/api/pending');
   if(pe.length){
    $('p_pending').style.display='block';
-   rows($('pending'),['symbol','stars','side','lots','sl','tp','reason','actions'],pe,p=>{
-    const ctx=JSON.parse(p.detail||'{}');
-    return '<tr><td><b>'+p.symbol+'</b></td><td>'+'&#11088;'.repeat(ctx.stars||1)+'</td>'+
+   rows($('pending'),['symbol','strategy','stars','side','lots','sl','tp','why the bot wants this','expires','actions'],pe,p=>{
+    let ctx={};try{ctx=JSON.parse(p.detail||'{}')}catch(ex){}
+    const mins=Math.max(0,Math.ceil((Date.parse(p.ts_expires)-Date.now())/60000));
+    const why=p.reason+(ctx.regime?' &#183; regime: '+ctx.regime:'')+
+     (ctx.median_spread_pts!=null?' &#183; spread(med): '+fmt(ctx.median_spread_pts,1)+' pts':'');
+    return '<tr><td><b>'+p.symbol+'</b></td>'+
+     '<td class="dim">'+p.strategy+(ctx.timeframe?' '+ctx.timeframe:'')+'</td>'+
+     '<td>'+'&#11088;'.repeat(ctx.stars||1)+'</td>'+
      '<td class="'+(p.side==='buy'?'pos':'neg')+'">'+p.side.toUpperCase()+'</td>'+
-     '<td>'+p.volume+'</td><td>'+p.sl+'</td><td>'+p.tp+'</td><td>'+p.reason+'</td>'+
+     '<td>'+p.volume+'</td><td>'+p.sl+'</td><td>'+p.tp+'</td>'+
+     '<td style="white-space:normal;max-width:340px">'+why+'</td>'+
+     '<td class="amb">'+(mins>0?mins+'m left':'expiring&hellip;')+'</td>'+
      '<td><button class="btn btn-ok" onclick="act('+p.id+',\\'approve\\')">APPROVE</button>'+
      '<button class="btn btn-no" onclick="act('+p.id+',\\'deny\\')">DENY</button></td></tr>';
    });
@@ -481,6 +554,125 @@ async function act(id,action){
    headers:{'Content-Type':'application/json'}});
   const res=await r.json();if(res.ok)tick();else alert('Error: '+res.error);
  }catch(e){alert('Network error: '+e)}
+}
+
+function chartCtl(){
+ $('chart_ctl').innerHTML=
+  chartSyms.map(s=>'<button class="cbtn'+(s===chartSym?' on':'')+'" onclick="setChart(\\''+s+'\\',null)">'+s+'</button>').join('')+
+  '<span style="display:inline-block;width:16px"></span>'+
+  ['M5','M15','M30','H1','H4','D1'].map(t=>'<button class="cbtn'+(t===chartTf?' on':'')+'" onclick="setChart(null,\\''+t+'\\')">'+t+'</button>').join('');
+}
+function setChart(s,t){if(s)chartSym=s;if(t)chartTf=t;chartCtl();loadChart();}
+async function loadChart(){
+ if(!chartSym||chartBusy)return;
+ chartBusy=true;
+ try{const c=await j('/api/chart?symbol='+chartSym+'&tf='+chartTf+'&count=180');drawChart(c);}
+ catch(e){}
+ finally{chartBusy=false}
+}
+
+function drawChart(c){
+ // Self-contained SVG candlestick chart. Bars come straight from the MT5
+ // bridge ([epoch,o,h,l,c,vol,spread]); overlays are the executor's own
+ // journal rows. No library, no external requests, nothing invented.
+ const svg=$('chart');
+ const W=svg.clientWidth||900,H=svg.clientHeight||280;
+ svg.setAttribute('viewBox','0 0 '+W+' '+H);
+ if(c.error){
+  $('chart_meta').className='badge badge-bad';$('chart_meta').textContent='bridge error';
+  svg.innerHTML='<text x="8" y="20" fill="#6b7686" font-size="11">'+c.error+'</text>';
+  $('chart_legend').textContent='';return;
+ }
+ const bars=c.bars||[];
+ if(bars.length<2){
+  svg.innerHTML='<text x="8" y="20" fill="#6b7686" font-size="11">no bars from bridge yet</text>';return;
+ }
+ const n=bars.length,padR=64,padB=18,padT=8;
+ const t0=bars[0][0],t1=bars[n-1][0],tfSec=Math.max(1,Math.round((t1-t0)/(n-1)));
+ // y-domain: bar range, widened by overlay levels that sit reasonably close
+ // (an SL parked 3x the visible range away should not squash the candles)
+ let lo=Math.min(...bars.map(b=>b[3])),hi=Math.max(...bars.map(b=>b[2]));
+ const rng=(hi-lo)||1;
+ const lvls=[];
+ (c.positions||[]).forEach(p=>lvls.push(p.price_open,p.sl,p.tp));
+ (c.pending||[]).forEach(p=>lvls.push(p.sl,p.tp));
+ lvls.filter(v=>v!=null&&v>0&&v>lo-3*rng&&v<hi+3*rng).forEach(v=>{lo=Math.min(lo,v);hi=Math.max(hi,v)});
+ const span=(hi-lo)||1;lo-=span*.04;hi+=span*.04;
+ const X=i=>2+i/(n-1)*(W-padR-8);
+ const Y=v=>padT+(1-(v-lo)/(hi-lo))*(H-padT-padB);
+ const tsX=ts=>{ // x of the bar nearest an epoch-seconds timestamp, null if off-window
+  if(ts==null||isNaN(ts)||ts<t0-tfSec||ts>t1+tfSec)return null;
+  let best=0,bd=Infinity;
+  for(let i=0;i<n;i++){const d=Math.abs(bars[i][0]-ts);if(d<bd){bd=d;best=i}}
+  return X(best);
+ };
+ const dp=hi>=500?2:hi>=20?3:5; // GOLD 2dp, JPY-quoted 3dp, majors 5dp
+ const P=v=>Number(v).toFixed(dp);
+ let out='';
+ for(let g=0;g<=4;g++){
+  const v=lo+(hi-lo)*g/4,y=Y(v);
+  out+='<line x1="2" y1="'+y+'" x2="'+(W-padR)+'" y2="'+y+'" stroke="#1e2430" stroke-width="1"/>';
+  out+='<text x="'+(W-padR+4)+'" y="'+(y+3)+'" fill="#6b7686" font-size="10">'+P(v)+'</text>';
+ }
+ const tstep=Math.max(1,Math.floor(n/6));
+ for(let i=0;i<n;i+=tstep){
+  const d=new Date(bars[i][0]*1000).toISOString();
+  out+='<text x="'+X(i)+'" y="'+(H-4)+'" fill="#6b7686" font-size="9">'+
+   (chartTf==='D1'?d.slice(5,10):d.slice(5,16).replace('T',' '))+'</text>';
+ }
+ const cw=Math.max(1,(W-padR)/n*.65);
+ bars.forEach((b,i)=>{
+  const x=X(i),up=b[4]>=b[1],col=up?'#3ddc84':'#ff5470';
+  const yO=Y(b[1]),yC=Y(b[4]);
+  const ts=new Date(b[0]*1000).toISOString().slice(0,16).replace('T',' ');
+  out+='<g><title>'+ts+'  O '+P(b[1])+'  H '+P(b[2])+'  L '+P(b[3])+'  C '+P(b[4])+'  vol '+b[5]+'</title>'+
+   '<line x1="'+x+'" y1="'+Y(b[2])+'" x2="'+x+'" y2="'+Y(b[3])+'" stroke="'+col+'" stroke-width="1"/>'+
+   '<rect x="'+(x-cw/2)+'" y="'+Math.min(yO,yC)+'" width="'+cw+'" height="'+Math.max(1,Math.abs(yC-yO))+'" fill="'+col+'"/></g>';
+ });
+ const lastC=bars[n-1][4],yLast=Y(lastC);
+ out+='<line x1="2" y1="'+yLast+'" x2="'+(W-padR)+'" y2="'+yLast+'" stroke="#4da3ff" stroke-width="1" stroke-dasharray="1,3"/>';
+ out+='<text x="'+(W-padR+4)+'" y="'+(yLast+3)+'" fill="#4da3ff" font-size="10" font-weight="bold">'+P(lastC)+'</text>';
+ const lvl=(v,col,dash,label)=>{
+  if(v==null||v<=0||v<lo||v>hi)return '';
+  const y=Y(v);
+  return '<line x1="2" y1="'+y+'" x2="'+(W-padR)+'" y2="'+y+'" stroke="'+col+'" stroke-width="1"'+(dash?' stroke-dasharray="4,3"':'')+'/>'+
+   '<text x="6" y="'+(y-3)+'" fill="'+col+'" font-size="9">'+label+'</text>';
+ };
+ (c.positions||[]).forEach(p=>{
+  const side=p.type===0?'buy':'sell';
+  out+=lvl(p.price_open,'#4da3ff',false,side+' '+p.volume+' @ '+P(p.price_open)+(p.profit!=null?' &#183; P&amp;L '+fmt(p.profit):''));
+  out+=lvl(p.sl,'#ff5470',true,'SL '+P(p.sl));
+  out+=lvl(p.tp,'#3ddc84',true,'TP '+P(p.tp));
+ });
+ (c.pending||[]).forEach(p=>{
+  out+=lvl(p.sl,'#ffb02e',true,'awaiting approval &#183; '+p.side+' SL '+P(p.sl));
+  out+=lvl(p.tp,'#ffb02e',true,'awaiting approval &#183; '+p.side+' TP '+P(p.tp));
+ });
+ (c.trades||[]).forEach(t=>{
+  let ctx={};try{ctx=JSON.parse(t.context||'{}')}catch(ex){}
+  if(t.entry_time&&t.entry_price!=null){
+   const x=tsX(Date.parse(t.entry_time)/1000);
+   if(x!=null){
+    const y=Y(t.entry_price),up=t.side==='buy';
+    out+='<g><title>'+t.strategy+' '+t.side+' @ '+P(t.entry_price)+(ctx.signal?' &#8212; '+ctx.signal:'')+'</title>'+
+     '<path d="M'+x+' '+(up?y-5:y+5)+' l5 '+(up?9:-9)+' h-10 z" fill="'+(up?'#3ddc84':'#ff5470')+'" stroke="#0b0e14" stroke-width="1"/></g>';
+   }
+  }
+  if(t.exit_time&&t.exit_price!=null){
+   const x=tsX(Date.parse(t.exit_time)/1000);
+   if(x!=null){
+    const y=Y(t.exit_price),col=t.pnl>0?'#3ddc84':t.pnl<0?'#ff5470':'#6b7686';
+    out+='<g><title>exit '+t.strategy+' @ '+P(t.exit_price)+' &#183; '+(t.exit_reason||'')+' &#183; P&amp;L '+fmt(t.pnl)+' ('+fmt(t.r_multiple,2)+'R)</title>'+
+     '<path d="M'+(x-4)+' '+(y-4)+' l8 8 M'+(x+4)+' '+(y-4)+' l-8 8" stroke="'+col+'" stroke-width="2" fill="none"/></g>';
+   }
+  }
+ });
+ svg.innerHTML=out;
+ $('chart_meta').className='badge badge-ok';
+ $('chart_meta').textContent=c.symbol+' '+c.tf+' · '+n+' bars · spread '+bars[n-1][6]+' pts';
+ $('chart_legend').innerHTML='&#9650;&#9660; executor entries &#183; &#10005; exits &#183; '+
+  '<span style="color:#4da3ff">&#9472;</span> open entry &#183; <span style="color:#ff5470">&#9476;</span> SL &#183; '+
+  '<span style="color:#3ddc84">&#9476;</span> TP &#183; <span style="color:#ffb02e">&#9476;</span> awaiting approval &#183; hover any candle for OHLC';
 }
 
 function drawEq(eq){
@@ -608,6 +800,16 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/summary":
                 self._send(200, json.dumps(self._json_safe(
                     api_summary(self.store, self.bridge))).encode(),
+                           "application/json")
+            elif self.path.startswith("/api/chart"):
+                try:
+                    symbol, tf, count = parse_chart_query(self.path)
+                except ValueError as e:
+                    self._send(400, json.dumps({"error": str(e)}).encode(),
+                               "application/json")
+                    return
+                self._send(200, json.dumps(self._json_safe(
+                    api_chart(self.store, self.bridge, symbol, tf, count))).encode(),
                            "application/json")
             elif self.path in ROUTES:
                 self._send(200, json.dumps(self._json_safe(

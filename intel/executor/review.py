@@ -215,10 +215,12 @@ if __name__ == "__main__":
     assert "gap_beyond_stop" in tags, tags
     rep = build_daily_report(s)
     assert rep["trades"] >= 1
-    # cleanup selftest artifacts
+    # cleanup selftest artifacts (incl. any cooldown the synthetic loss tripped
+    # — leaving it painted a phantom 'selftest' cooldown on the dashboard)
     s.execute("DELETE FROM trades WHERE id=?", (tid,))
     s.execute("DELETE FROM lessons WHERE trade_id=?", (tid,))
     s.execute("DELETE FROM daily_reports WHERE date=?", (rep["date"],))
+    s.execute("DELETE FROM engine_state WHERE key LIKE 'cooldown:selftest:%'")
     build_daily_report(s)  # rebuild the real (empty) report for today
     print("REVIEW SELFTEST OK — tags:", tags)
     print("  report:", rep["summary"])

@@ -260,6 +260,16 @@ class Store:
             "sl, tp, exit_time, exit_price, pnl, r_multiple, exit_reason, status "
             "FROM trades ORDER BY id DESC LIMIT ?", (limit,))
 
+    def trades_for_chart(self, symbol: str, limit: int = 60) -> list[dict]:
+        """Trade markers for the price-chart panel: entries/exits with prices,
+        times, SL/TP and the journaled context (why the bot took the trade)."""
+        return self.query(
+            "SELECT ticket, strategy, side, volume, entry_time, entry_price, "
+            "sl, tp, exit_time, exit_price, pnl, r_multiple, exit_reason, "
+            "status, context "
+            "FROM trades WHERE symbol=? ORDER BY id DESC LIMIT ?",
+            (symbol, limit))
+
     def combos(self) -> list[dict]:
         """Live results grouped by strategy x symbol (closed trades only)."""
         return self.query(

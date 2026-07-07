@@ -125,7 +125,8 @@ The **autonomous trading loop** — demo-gated, self-auditing, 24/7. Built on to
 | Gate | OOS backtest on 5,000 fresh broker bars per strategy×symbol |
 | Risk | 0.5% sizing, 2% daily halt, 10% drawdown halt, news blackout |
 | Review | Post-mortem on every closed trade, auto-disable losing combos |
-| Dashboard | `http://127.0.0.1:8877` — live positions, decision feed, gate status |
+| Dashboard | `http://127.0.0.1:8877` — live candlestick chart (bars straight from MT5, entries/SL/TP/trade markers drawn from the journal), positions, decision feed, gate status |
+| HITL | `MI_HITL_MODE=1` — every proposed trade waits on the dashboard for a human APPROVE/DENY (15-min TTL, then auto-expires; stale quotes can never fire) |
 
 ---
 
@@ -186,7 +187,7 @@ Shared, dependency-free `@runtime_checkable` Protocols for cross-subsystem conve
 | [gate.py](file:///home/flowdaaddy/mt5-research/intel/executor/gate.py) | ~8K | OOS backtest on 5,000 fresh broker bars per strategy×symbol. Must be profitable OOS + in ≥2/3 time slices. |
 | [review.py](file:///home/flowdaaddy/mt5-research/intel/executor/review.py) | ~11K | Post-mortem on every closed trade. Pattern detection (stop-too-tight, against-H4-trend, etc.). Cooldown/disable logic. |
 | [risk.py](file:///home/flowdaaddy/mt5-research/intel/executor/risk.py) | ~6K | 0.5% risk sizing, 2% daily halt, 10% drawdown halt, news blackout ±30min. |
-| [dashboard.py](file:///home/flowdaaddy/mt5-research/intel/executor/dashboard.py) | ~17K | Live web dashboard on `:8877`. Account, positions, decision feed, gate status. |
+| [dashboard.py](file:///home/flowdaaddy/mt5-research/intel/executor/dashboard.py) | ~17K | Live web dashboard on `:8877`. Real-time candlestick chart with SL/TP/entry overlays, account, positions, HITL approvals, decision feed, gate status. |
 | [store.py](file:///home/flowdaaddy/mt5-research/intel/executor/store.py) | ~8K | SQLite persistence for trades, decisions, lessons, equity snapshots. |
 | [config.py](file:///home/flowdaaddy/mt5-research/intel/executor/config.py) | ~7K | Executor-specific configuration. All env-var driven. |
 | [notify.py](file:///home/flowdaaddy/mt5-research/intel/executor/notify.py) | ~3K | Phone notifications via ntfy.sh or Telegram. Fire-and-forget. |
