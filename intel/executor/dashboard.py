@@ -139,6 +139,9 @@ def api_manual_order(store: Store, bridge: Bridge, body: dict) -> dict:
     demo gate in bridge_server.py guards this write like any other — and the
     same journal. Discipline still applies: whitelisted symbol, capped size,
     SL and TP mandatory. No stop, no order."""
+    if not config.MANUAL_TICKET:
+        return {"ok": False,
+                "error": "manual ticket disabled (set MI_MANUAL_TICKET=1 to enable)"}
     symbol, side = body.get("symbol"), body.get("side")
     if symbol not in config.SYMBOLS:
         return {"ok": False, "error": "symbol must be one of %s" % ",".join(config.SYMBOLS)}
@@ -177,6 +180,7 @@ def api_summary(store: Store, bridge: Bridge) -> dict:
                      "exec_mode": config.EXEC_MODE,
                      "hitl": config.HITL_MODE,
                      "hitl_ttl_min": config.HITL_TTL_MIN,
+                     "manual_ticket": config.MANUAL_TICKET,
                      "max_positions": config.MAX_OPEN_POSITIONS,
                      "risk_pct": config.RISK_PER_TRADE_PCT,
                      "max_daily_loss_pct": config.MAX_DAILY_LOSS_PCT,
@@ -352,7 +356,7 @@ border-radius:4px;padding:3px 6px;font:11px ui-monospace,monospace;margin:0 4px 
 
 <div class="panel"><h2>Manual controls — human overrides, all journaled</h2>
 <div id="controls"><span class="dim">loading&hellip;</span></div>
-<div style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
+<div id="ticket_wrap" style="display:none;margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
 <div class="dim" style="font-size:11px;margin-bottom:5px">manual trade ticket — same demo-gated bridge as the bot; SL + TP mandatory, max 1.0 lot</div>
 <div id="ticket">
 <select id="mo_sym"></select>
@@ -487,6 +491,7 @@ async function tick(){
    $('mo_sym').innerHTML=chartSyms.map(x=>'<option>'+x+'</option>').join('');
   }
 
+  $('ticket_wrap').style.display=ru.manual_ticket?'block':'none';
   $('controls').innerHTML=
    '<div class="ctl-row">'+(s.manual_halt
     ?'<button class="btn btn-ok" onclick="control(\\'resume\\')">RESUME ENTRIES</button><span class="amb">paused &#8212; '+s.manual_halt+'</span>'

@@ -125,11 +125,28 @@ class TestClosePosition(ControlsBase):
 
 
 class TestManualOrder(ControlsBase):
+    def setUp(self):
+        super().setUp()
+        self._orig_ticket = config.MANUAL_TICKET
+        config.MANUAL_TICKET = True
+
+    def tearDown(self):
+        config.MANUAL_TICKET = self._orig_ticket
+        super().tearDown()
+
     def _order(self, **over):
         body = {"symbol": SYM, "side": "buy", "volume": 0.02,
                 "sl": 1.05, "tp": 1.15}
         body.update(over)
         return body
+
+    def test_disabled_by_default_even_for_valid_order(self):
+        config.MANUAL_TICKET = False
+        bridge = FakeBridge()
+        out = dashboard.api_manual_order(self.store, bridge, self._order())
+        self.assertFalse(out["ok"])
+        self.assertIn("disabled", out["error"])
+        self.assertEqual(bridge.orders, [])
 
     def test_happy_path_orders_and_journals(self):
         bridge = FakeBridge()

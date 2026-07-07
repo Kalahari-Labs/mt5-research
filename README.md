@@ -359,7 +359,7 @@ a stale quote can never reach the bridge.
 | PAUSE / RESUME | Stops new entries (`manual_halt`, enforced by the risk veto every cycle); open positions stay managed |
 | KILL SWITCH | Flattens every position and halts the engine (touches the `KILL` file) |
 | CLOSE (per position) | Market-close one ticket; refused if the ticket isn't actually open |
-| Manual trade ticket | Human order through the **same demo-gated bridge** as the bot: whitelisted symbols only, max 1.0 lot, SL + TP mandatory — no stop, no order |
+| Manual trade ticket | **Opt-in, off by default** (`MI_MANUAL_TICKET=1`). Human order through the **same demo-gated bridge** as the bot: whitelisted symbols only, max 1.0 lot, SL + TP mandatory — no stop, no order. Default posture: the human approves, the bot enters |
 
 ---
 

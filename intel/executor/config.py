@@ -70,6 +70,9 @@ BARS_BACKTEST = _get("MI_BARS_BACKTEST", 5000, int) # bars fetched for the gate
 EXEC_MODE = _get("MI_EXEC_MODE", "trade")
 HITL_MODE = _get("MI_HITL_MODE", False, bool)
 HITL_TTL_MIN = _get("MI_HITL_TTL_MIN", 15, int)     # minutes a proposal stays approvable
+# Manual trade ticket on the dashboard. OFF by default: the sanctioned human
+# role is approving/denying the bot's proposals, not entering trades by hand.
+MANUAL_TICKET = _get("MI_MANUAL_TICKET", False, bool)
 ALLOW_LIVE = _get("MI_ALLOW_LIVE", False, bool)
 MAGIC = _get("MI_MAGIC", 770001, int)               # tags every executor order
 
