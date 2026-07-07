@@ -67,7 +67,7 @@ live (fills, slippage, spread widening, and your own interference all differ).
 
 ## The strategies
 
-Ten pre-registered strategies, all behind the same contract: one causal
+Fourteen pre-registered strategies, all behind the same contract: one causal
 `decide(bars, i)` used identically by the backtester and the live engine, an
 explicit SL + TP on every signal, and **no strategy trades until its
 strategy×symbol combo passes the out-of-sample gate on your broker's own
@@ -85,6 +85,10 @@ data**. Expect most combos to be rejected — that is the system working.
 | `momentum_macd` | MACD histogram flip with the EMA200 regime | H1 |
 | `rsi2_meanrev` | Connors RSI(2) flush back to the EMA20 mean, with-trend | H1 |
 | `scalp_ema_cross` | session scalper, EMA9/21 cross, tight ATR stops | M15 |
+| `ema_stack` | 4-EMA perfect alignment (9>21>50>200) + RSI pullback to EMA21 | H1 |
+| `consolidation_break` | N-bar span coil (< 2.5×ATR) + first real-body breakout | H1 |
+| `ny_open_momentum` | pre-NY range; first directional real-body close into NY session | M15 |
+| `pivot_bounce` | confirmed swing pivot rejection at support/resistance + trend | H1 |
 
 Param grids stay frozen on purpose: this repo's own research burned 29 configs
 in walk-forward. New ideas enter the registry, pass the gate, or stay in

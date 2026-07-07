@@ -99,12 +99,7 @@ def run_gate(store: Store, bridge: Bridge, symbols: list[str] | None = None,
     symbols = symbols or config.SYMBOLS
     # drop rows for strategies/symbols that no longer exist so the dashboard
     # and risk layer never consult a ghost combo
-    marks = ",".join("?" * len(REGISTRY))
-    store.execute(f"DELETE FROM strategy_status WHERE strategy NOT IN ({marks})",
-                  tuple(REGISTRY))
-    smarks = ",".join("?" * len(symbols))
-    store.execute(f"DELETE FROM strategy_status WHERE symbol NOT IN ({smarks})",
-                  tuple(symbols))
+    store.prune_strategy_status(REGISTRY.keys(), symbols)
     out = {}
     for sym in symbols:
         bars_by_tf: dict[str, Bars] = {}
@@ -159,8 +154,7 @@ def gate_stale(store: Store) -> bool:
 
 
 def enabled_combos(store: Store) -> set[tuple[str, str]]:
-    rows = store.query("SELECT strategy, symbol, status FROM strategy_status")
-    return {(r["strategy"], r["symbol"]) for r in rows if r["status"] == "enabled"}
+    return store.enabled_combos()
 
 
 if __name__ == "__main__":

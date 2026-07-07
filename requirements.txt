@@ -1,17 +1,25 @@
-# Canonical stack for a normally-networked machine.
+# Dependency manifest — ALIGNED WITH ACTUAL IMPORTS (Phase 1.4).
 #
-# IMPORTANT environment note: on the box this was built on, PyPI is unreachable
-# AND the MetaTrader5 package cannot import on Linux. The code therefore runs on
-# numpy + the standard library, and real market data is pulled through a Wine
-# bridge (see README "Environment note" and tools/mt5_dump.py). The modules keep
-# the same boundaries and metric vocabulary so installing the packages below on a
-# connected machine is a drop-in upgrade, not a rewrite.
+# Reality check: every subsystem runs on numpy + the Python standard library.
+# No module imports pandas, pandas-ta, or backtesting, so those are NOT listed
+# here (they were aspirational and one of them does not even build on this box).
+# pyproject.toml (`dependencies = ["numpy"]`) is the authoritative runtime
+# contract; this file is the convenience superset including optional integrations.
+#
+# Real market data is pulled through a Wine MT5 bridge on Linux/macOS; see
+# docs/ARCHITECTURE.md and tools/mt5_dump.py.
 
-MetaTrader5>=5.0.45 ; platform_system == "Windows"
-numpy>=1.26
-pandas>=2.0
-pandas-ta>=0.3.14b
-backtesting>=0.3.3
-python-dotenv>=1.0
+# --- required runtime ---
+numpy>=1.24
+
+# --- optional integrations (all imported behind guards; safe to omit) ---
+MetaTrader5>=5.0.45 ; platform_system == "Windows"  # native Windows bridge only
+python-dotenv>=1.0                                    # nicer .env loading (config.py falls back to a hand-rolled loader)
+supabase>=2.0                                         # only if SUPABASE_URL + SUPABASE_KEY are set (journal/intel store)
+
+# --- optional dev / test ---
+# The suites use the stdlib `unittest` runner and need nothing beyond numpy:
+#   python3 -m unittest discover -s tests
+#   bash intel/executor/selftest.sh
+# pytest is supported but not required (the tests are pytest-compatible):
 pytest>=8.0
-supabase>=2.0          # optional: only used if SUPABASE_URL + SUPABASE_KEY are set

@@ -1,0 +1,40 @@
+name: CI
+
+# Runs the existing test suites on every pull request (and pushes to main).
+# Both suites need only numpy + the standard library — no broker, no network.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]  # matches requires-python >=3.10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install runtime dependency (numpy only)
+        run: python -m pip install --upgrade pip numpy
+
+      - name: core package imports (dependency-free contract layer)
+        run: python -c "import core; print('core exports:', core.__all__)"
+
+      - name: Root + core test suite (unittest, 114 tests)
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Executor self-tests (canonical live subsystem)
+        run: bash intel/executor/selftest.sh

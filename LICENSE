@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Kalahari Labs
+Copyright (c) 2026 Julian Godenschweig (Kalahari Labs)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -12,12 +12,6 @@ furnished to do so, subject to the following conditions:
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 
-TRADING RISK NOTICE: This software can place orders on financial markets.
-Trading leveraged products involves substantial risk of loss. The authors and
-copyright holders provide it for research and education, make no representation
-about profitability, and accept no responsibility for financial losses arising
-from its use. Nothing in this repository is financial advice.
-
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,3 +19,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+------------------------------------------------------------------------------
+ADDITIONAL NOTICE (not part of the standard MIT License text above)
+------------------------------------------------------------------------------
+
+This software is an experimental quantitative tool. Trading contains risk;
+the creator is not responsible for financial losses.
+
+TRADING RISK NOTICE: This software can place orders on financial markets.
+Trading leveraged products involves substantial risk of loss. The authors and
+copyright holders provide it for research and education, make no representation
+about profitability, and accept no responsibility for financial losses arising
+from its use. Nothing in this repository is financial advice.

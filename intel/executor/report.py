@@ -25,8 +25,7 @@ def render(store: Store, live_equity: float | None = None) -> str:
     start_ts = ft.get("ts", "")
     start_eq = ft.get("equity")
     if live_equity is None:
-        rows = store.query("SELECT equity FROM equity_curve ORDER BY id DESC LIMIT 1")
-        live_equity = rows[0]["equity"] if rows else None
+        live_equity = store.last_equity()
     days = None
     if start_ts:
         t0 = datetime.strptime(start_ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
@@ -57,16 +56,14 @@ def render(store: Store, live_equity: float | None = None) -> str:
                   ("%s%%" % st["win_rate"]) if st["win_rate"] is not None else "—",
                   st["pnl"], st["profit_factor"] or "—", st["best"], st["worst"])]
 
-    combos = store.query(
-        "SELECT strategy, symbol, COUNT(*) n, SUM(pnl>0) wins, ROUND(SUM(pnl),2) pnl "
-        "FROM trades WHERE status='closed' GROUP BY strategy, symbol ORDER BY pnl DESC")
+    combos = store.combos()
     if combos:
         lines += ["", "## By strategy × symbol", "",
                   "| strategy | symbol | trades | wins | P&L |", "|---|---|---|---|---|"]
         lines += ["| %s | %s | %s | %s | %s |" %
                   (c["strategy"], c["symbol"], c["n"], c["wins"], c["pnl"]) for c in combos]
 
-    reports = store.query("SELECT * FROM daily_reports ORDER BY date DESC LIMIT 30")
+    reports = store.daily_reports(30)
     if reports:
         lines += ["", "## Daily reports (last 30)", "",
                   "| date | trades | wins | win rate | P&L | equity close |",
@@ -77,15 +74,13 @@ def render(store: Store, live_equity: float | None = None) -> str:
                 ("%s%%" % r["win_rate"]) if r["win_rate"] is not None else "—",
                 r["pnl"], round(r["equity_close"], 2) if r["equity_close"] else "—"))
 
-    lessons = store.query(
-        "SELECT tag, COUNT(*) c FROM lessons GROUP BY tag ORDER BY c DESC LIMIT 12")
+    lessons = store.lesson_counts(12)
     if lessons:
         lines += ["", "## Self-review lessons (all time)", "",
                   "| mistake tag | count |", "|---|---|"]
         lines += ["| %s | %s |" % (l["tag"], l["c"]) for l in lessons]
 
-    gate_rows = store.query(
-        "SELECT strategy, symbol, status FROM strategy_status ORDER BY status, strategy")
+    gate_rows = store.strategy_statuses()
     enabled = [r for r in gate_rows if r["status"] == "enabled"]
     lines += ["", "## Gate status",
               "", "%d of %d combos currently allowed to trade: %s" % (

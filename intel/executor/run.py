@@ -14,6 +14,7 @@ engine flatten all positions and idle without stopping the processes.
 """
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import sys
@@ -26,6 +27,31 @@ from .bridge import ensure_bridge
 CHILDREN: dict[str, subprocess.Popen] = {}
 BACKOFF: dict[str, float] = {}
 STARTED: dict[str, float] = {}
+
+
+def reap_strays() -> int:
+    """Kill orphaned engine/dashboard processes from a previous or manual run
+    (e.g. a stray `python3 -m executor.dashboard`). They squat the ports, so
+    every respawn dies instantly with EADDRINUSE while the orphan serves stale
+    data — the exact failure that looks like 'dashboard shows mock values'.
+    Returns how many were reaped. POSIX-only; Windows setups run one stack."""
+    if os.name == "nt":
+        return 0
+    own = {os.getpid()} | {p.pid for p in CHILDREN.values() if p and p.poll() is None}
+    reaped = 0
+    for pattern in ("-m executor.engine", "-m executor.dashboard"):
+        out = subprocess.run(["pgrep", "-f", "--", pattern],
+                             capture_output=True, text=True)
+        for pid_s in out.stdout.split():
+            pid = int(pid_s)
+            if pid in own:
+                continue
+            log("reaping stray '%s' (pid %s)" % (pattern, pid))
+            subprocess.run(["kill", pid_s], capture_output=True)
+            reaped += 1
+    if reaped:
+        time.sleep(2)  # let the kernel release the listening sockets
+    return reaped
 
 
 def log(msg: str) -> None:
@@ -60,6 +86,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
     log("ensuring MT5 terminal + Wine bridge ...")
+    reap_strays()
     b = ensure_bridge()
     h = b.health()
     log("bridge ok — account %s (%s), writes %s"
@@ -84,6 +111,10 @@ def main() -> None:
             elif p:
                 wait = min(BACKOFF.get(name, 5) * 2, 300)
                 BACKOFF[name] = wait
+                died_fast = time.time() - STARTED.get(name, 0) < 10
+                if died_fast and reap_strays():
+                    # an orphan held the port — that was the cause, retry now
+                    wait = BACKOFF[name] = 5
                 log("%s died (rc=%s) — restarting in %ss" % (name, p.returncode, wait))
                 time.sleep(wait)
                 spawn(name, module)
