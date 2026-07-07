@@ -8,6 +8,7 @@ assumed. Exit code 0 = ready to run ./start.sh observe.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import urllib.request
@@ -133,6 +134,11 @@ def main() -> int:
     print("       mode=%s risk/trade=%s%% daily-stop=%s%% max-DD=%s%% max-vol=%s lots"
           % (config.EXEC_MODE, config.RISK_PER_TRADE_PCT, config.MAX_DAILY_LOSS_PCT,
              config.MAX_DRAWDOWN_PCT, config.MAX_VOLUME))
+    check("Supabase (optional — bring your own project for the intel/ plane)",
+          bool(os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SERVICE_KEY")),
+          "not set — fine, falls back to local sqlite. To use your own: fill "
+          "SUPABASE_URL + SUPABASE_SERVICE_KEY in intel/.env (run migrations/0001_init.sql there first)",
+          warn_only=True)
 
     if "--gate" in sys.argv and failures == 0:
         print("\n-- backtest gate (5000 bars per combo from YOUR broker) --")

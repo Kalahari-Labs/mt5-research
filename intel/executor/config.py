@@ -56,6 +56,10 @@ BRIDGE_SPAWN = _get("MI_BRIDGE_SPAWN", BRIDGE_HOST in ("127.0.0.1", "localhost")
 WINEPREFIX = _get("MI_WINEPREFIX", str(Path.home() / ".mt5"))
 WINE_PYTHON = _get("MI_WINE_PYTHON", r"C:\Program Files\Python312\python.exe")
 TERMINAL_EXE = _get("MI_TERMINAL_EXE", r"C:\Program Files\MetaTrader 5\terminal64.exe")
+# headless Linux servers have no DISPLAY in a systemd service's environment
+# (unlike an interactive shell) — set this to an Xvfb display (e.g. ":99") so
+# Wine can still open the MT5 terminal GUI for its one-time login
+WINE_DISPLAY = _get("MI_WINE_DISPLAY", "")
 
 # ---- universe / cadence -----------------------------------------------------
 SYMBOLS = [s.strip() for s in _get("MI_SYMBOLS", "EURUSD,GBPUSD,USDJPY,GOLD").split(",") if s.strip()]

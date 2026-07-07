@@ -149,6 +149,8 @@ def _wine_env() -> dict:
     env["WINEDEBUG"] = "-all"
     env["MI_BRIDGE_PORT"] = str(config.BRIDGE_PORT)
     env["MI_MAX_ORDER_VOLUME"] = str(config.MAX_VOLUME)
+    if config.WINE_DISPLAY:
+        env["DISPLAY"] = config.WINE_DISPLAY
     return env
 
 
