@@ -588,11 +588,12 @@ class Handler(BaseHTTPRequestHandler):
                 cl = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(cl).decode())
                 tid, act = body.get("id"), body.get("action")
-                if act == "approve":
-                    self.store.execute("UPDATE pending_trades SET status='approved' WHERE id=?", (tid,))
-                elif act == "deny":
-                    self.store.execute("UPDATE pending_trades SET status='denied' WHERE id=?", (tid,))
-                self._send(200, b'{"ok":true}', "application/json")
+                if self.store.act_on_pending(int(tid), act):
+                    resp = {"ok": True}
+                else:
+                    resp = {"ok": False,
+                            "error": "proposal no longer pending (expired or already acted on)"}
+                self._send(200, json.dumps(resp).encode(), "application/json")
             else:
                 self._send(404, b'{"error":"not found"}', "application/json")
         except Exception as e:

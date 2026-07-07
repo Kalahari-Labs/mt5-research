@@ -431,6 +431,31 @@ class Store:
             self.execute("UPDATE pending_trades SET status=?, reason=? WHERE id=?",
                          (status, reason, pending_id))
 
+    def expire_stale_pending(self, now: str | None = None) -> int:
+        """Mark pending/approved proposals past ts_expires as expired. Sweeping
+        'approved' too closes the race where a human approves a proposal after
+        its expiry but before this sweep — a stale quote can never reach the
+        bridge. Returns how many rows were expired."""
+        cur = self.conn.execute(
+            "UPDATE pending_trades SET status='expired' "
+            "WHERE status IN ('pending','approved') AND ts_expires < ?",
+            (now or utcnow(),))
+        self.conn.commit()
+        return cur.rowcount
+
+    def act_on_pending(self, pending_id: int, action: str) -> bool:
+        """Apply a human approve/deny. Only rows still 'pending' can be acted
+        on — expired/executed/denied rows cannot be resurrected. Returns True
+        if a row actually changed."""
+        status = {"approve": "approved", "deny": "denied"}.get(action)
+        if status is None:
+            return False
+        cur = self.conn.execute(
+            "UPDATE pending_trades SET status=? WHERE id=? AND status='pending'",
+            (status, pending_id))
+        self.conn.commit()
+        return cur.rowcount > 0
+
 
 if __name__ == "__main__":
     s = Store()

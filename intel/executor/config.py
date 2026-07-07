@@ -69,6 +69,7 @@ BARS_BACKTEST = _get("MI_BARS_BACKTEST", 5000, int) # bars fetched for the gate
 # trade:   sends orders for gate-passed combos (demo-guarded server-side anyway).
 EXEC_MODE = _get("MI_EXEC_MODE", "trade")
 HITL_MODE = _get("MI_HITL_MODE", False, bool)
+HITL_TTL_MIN = _get("MI_HITL_TTL_MIN", 15, int)     # minutes a proposal stays approvable
 ALLOW_LIVE = _get("MI_ALLOW_LIVE", False, bool)
 MAGIC = _get("MI_MAGIC", 770001, int)               # tags every executor order
 

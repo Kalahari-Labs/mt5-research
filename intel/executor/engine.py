@@ -353,7 +353,7 @@ class Engine:
             return
 
         expires = (datetime.now(timezone.utc) +
-                   timedelta(seconds=config.CYCLE_SEC * 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                   timedelta(minutes=config.HITL_TTL_MIN)).strftime("%Y-%m-%dT%H:%M:%SZ")
         stars = self.calculate_confluence(symbol, tf, reg, sig)
         ctx = {"signal": sig.reason, "tags": list(sig.tags), "regime": reg,
                "median_spread_pts": med_spread_pts, "timeframe": tf, "stars": stars}
@@ -371,6 +371,10 @@ class Engine:
 
     def execute_approved_trades(self, account: dict) -> None:
         """Check for human-approved trades and send them to the bridge."""
+        expired = self.store.expire_stale_pending()
+        if expired:
+            self.store.decide("skip", "%d HITL proposal(s) expired unapproved" % expired)
+            log("HITL: expired %d stale proposal(s)" % expired)
         pending = self.store.pending_trades("approved")
         for p in pending:
             try:
