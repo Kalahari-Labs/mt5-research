@@ -160,6 +160,10 @@ class Store:
             (key, json.dumps(value), utcnow()))
         self.conn.commit()
 
+    def clear_state(self, key: str) -> None:
+        self.conn.execute("DELETE FROM engine_state WHERE key=?", (key,))
+        self.conn.commit()
+
     def get_state(self, key: str, default=None):
         rows = self.query("SELECT value FROM engine_state WHERE key=?", (key,))
         if not rows:

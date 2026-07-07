@@ -1,7 +1,30 @@
 # 📋 Full Repository Documentation — `mt5-research`
 
 > **Kalahari Labs · market-intel executor + research harness**
-> Audit date: 2026-07-06 · **156/156 tests passing** ✅
+> Audit date: 2026-07-07 · **193/193 tests passing** ✅
+
+---
+
+## Install — one command
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kalahari-Labs/mt5-research/main/bootstrap.sh | bash
+```
+
+That clones the repo, verifies Python ≥ 3.10 + numpy (the **only** runtime
+dependency), runs the full 193-test suite on your machine, seeds `intel/.env`,
+and prints platform-specific next steps for connecting MT5. It will **not**
+enable live trading — that is structurally impossible without the
+[triple gate](#safety-model). Detailed guides:
+
+| Platform | Guide |
+|---|---|
+| **Windows** (easiest) | [intel/docs/INSTALL-WINDOWS.md](intel/docs/INSTALL-WINDOWS.md) |
+| **Linux** (Wine bridge) | [intel/docs/INSTALL-WINE-MT5.md](intel/docs/INSTALL-WINE-MT5.md) |
+| **Raspberry Pi** | [intel/docs/INSTALL-RASPBERRY-PI.md](intel/docs/INSTALL-RASPBERRY-PI.md) |
+
+Then: `cd intel && python3 -m executor.run` and open the dashboard at
+`http://127.0.0.1:8877`.
 
 ---
 
@@ -22,7 +45,8 @@ research-registry workflow.
 3. [The Two Planes](#the-two-planes)
 4. [Module-by-Module Breakdown](#module-by-module-breakdown)
 5. [Strategies](#strategies)
-6. [The 5-Phase Research Journey](#the-5-phase-research-journey)
+6. [The 6-Phase Research Journey](#the-6-phase-research-journey)
+7. [Dashboard — The Control Room](#dashboard--the-control-room)
 7. [Cost & Fill Model](#cost--fill-model)
 8. [Data Pipeline](#data-pipeline)
 9. [Safety Model](#safety-model)
@@ -45,11 +69,12 @@ An **autonomous, demo-gated MT5 trading executor** and its underlying **research
 - The system's own research found 29/29 momentum configs failed walk-forward under real costs — the gate exists **because** of that
 
 ### Key Numbers
-- **~10,450 lines** of Python across 30+ modules
-- **114 unit tests**, all passing (2.4 seconds)
+- **~11,000 lines** of Python across 30+ modules
+- **193 unit tests**, all passing
 - **7,177 D1 bars** of EURUSD data (euro-era 1999→2026, ~27.5 years)
-- **3 research strategies** + **10 executor strategies**
-- **Zero external dependencies** beyond `numpy` + stdlib
+- **4 research strategies** + **10 executor strategies**
+- **Zero external dependencies** beyond `numpy` + stdlib — the dashboard
+  chart is self-contained SVG/JS, no CDN, no chart API key
 
 ---
 
@@ -208,12 +233,13 @@ Shared, dependency-free `@runtime_checkable` Protocols for cross-subsystem conve
 
 ## Strategies
 
-### Research Strategies (3)
+### Research Strategies (4)
 
 | Strategy | Signal | Default TF | Params | Verdict |
 |---|---|---|---|---|
 | **SMA Crossover** | Fast SMA > Slow SMA → long; < → short | H1 | fast=20, slow=50 | ❌ NO EDGE on H1 after costs. Walk-forward OOS negative. |
 | **TS Momentum** | Sign of trailing lookback-period return, with EMA anchor filter | D1 | lookback=120, anchor=200 | ⚠️ Thin: OOS +34.5% over 24yr, but Sharpe 0.2, maxDD -26.5%. Swap kills it. |
+| **Carry Momentum** | TSMOM signal filtered/blended by directional overnight swap (carry) | D1 | filter X∈{0,50,100}bps, composite λ∈{0.25,0.5} | ❌ Best pre-registered config: pooled OOS Sharpe 0.28 vs the 0.5 gate — GATE NOT MET ([PHASE6.md](PHASE6.md)) |
 | **Buy & Hold** | Always long | — | none | Trivial placeholder |
 
 ### Executor Strategies (10)
@@ -233,7 +259,7 @@ Shared, dependency-free `@runtime_checkable` Protocols for cross-subsystem conve
 
 ---
 
-## The 5-Phase Research Journey
+## The 6-Phase Research Journey
 
 ```mermaid
 flowchart LR
@@ -243,13 +269,15 @@ flowchart LR
     P3["Phase 3\nTS Momentum\n(D1, 27yr)"]
     P4["Phase 4\nPortfolio\n(5 instruments)"]
     P5["Phase 5\nShort-Hold H4\n(directional swap)"]
+    P6["Phase 6\nCarry-Aware\nMomentum"]
 
     P0 -->|"-12.18% → -13.04%"| P1
     P1 -->|"NO EDGE"| P2
     P2 -->|"TSMOM hypothesis"| P3
     P3 -->|"+34.5% OOS (thin)"| P4
     P4 -->|"swap kills edge"| P5
-    P5 -->|"turnover > savings"| GATE["GATE: SHUT\n❌ Not tradeable"]
+    P5 -->|"turnover > savings"| P6
+    P6 -->|"Sharpe 0.28 < 0.5"| GATE["GATE: SHUT\n❌ Not tradeable"]
 
     style GATE fill:#ff4444,color:#fff
 ```
@@ -289,6 +317,49 @@ flowchart LR
 - **Kill criterion fired:** extra execution cost > swap savings
 - Turnover scales faster than swap savings — the hypothesis fails
 - **Gate: NOT MET**
+
+### Phase 6 — Carry-Aware Momentum
+- Question left open between 4 and 5: make the **signal** swap-aware instead
+  of changing the holding period
+- 5 pre-registered configs (carry filter X∈{0,50,100}bps; composite λ∈{0.25,0.5}),
+  every one logged to the multiple-testing counter **before** any run
+- Best: filter X=0bps — net pooled **OOS Sharpe 0.28** (ann +1.14%) vs the 0.5 gate
+- **Gate: NOT MET** — full honesty in [PHASE6.md](PHASE6.md); registry count
+  now 34 OOS-evaluated configs, none passing
+
+---
+
+## Dashboard — The Control Room
+
+`http://127.0.0.1:8877` — served by stdlib `http.server`, self-contained
+JS/SVG, zero CDN, zero chart API. Every number is a row the engine journaled
+to SQLite or a live read from the MT5 bridge; the dashboard computes nothing
+and invents nothing.
+
+![Dashboard — controls, account, discipline rules](intel/docs/screenshots/dashboard-controls.png)
+
+**Live price chart** — real candles straight from your broker feed (M5→D1,
+all configured symbols), with the executor's life drawn on top: entry lines,
+SL/TP levels, ▲▼ entry markers and ✕ exits — hover any marker and the tooltip
+tells you the strategy and *why* it entered (the journaled signal).
+
+![Dashboard — live candlestick chart with SL/TP overlays](intel/docs/screenshots/dashboard-chart.png)
+
+**Human-in-the-loop (`MI_HITL_MODE=1`)** — the bot stops firing and starts
+*proposing*. Each proposal holds in the amber approvals panel with the full
+case: strategy, confluence stars, regime, spread context, SL/TP, and a live
+expiry countdown (default 15 min, `MI_HITL_TTL_MIN`). You click **APPROVE**
+or **DENY**. Expired or already-acted proposals can never be resurrected —
+a stale quote can never reach the bridge.
+
+**Manual controls — all journaled, all demo-gated server-side:**
+
+| Control | What it does |
+|---|---|
+| PAUSE / RESUME | Stops new entries (`manual_halt`, enforced by the risk veto every cycle); open positions stay managed |
+| KILL SWITCH | Flattens every position and halts the engine (touches the `KILL` file) |
+| CLOSE (per position) | Market-close one ticket; refused if the ticket isn't actually open |
+| Manual trade ticket | Human order through the **same demo-gated bridge** as the bot: whitelisted symbols only, max 1.0 lot, SL + TP mandatory — no stop, no order |
 
 ---
 
@@ -408,7 +479,7 @@ flowchart LR
 ## Test Suite Results
 
 ```
-Ran 114 tests in 2.427s — OK ✅
+Ran 193 tests in ~36s — OK ✅
 ```
 
 ### Test Coverage by Module
@@ -416,6 +487,10 @@ Ran 114 tests in 2.427s — OK ✅
 | Test File | Tests | What's Covered |
 |---|--:|---|
 | `test_risk.py` | 11 | Position sizing, max-risk cap, daily loss cap, kill switch, open positions |
+| `test_hitl.py` | 11 | HITL proposal TTL, expiry sweep (approve-after-expiry race), no resurrection of expired/executed proposals |
+| `test_chart_api.py` | 12 | Chart param validation (symbol/tf whitelists, count clamp), overlay filtering, bridge-down degradation |
+| `test_controls_api.py` | 14 | Pause/resume/kill journaling, close-position guards, manual-ticket discipline (symbol whitelist, 1.0-lot cap, mandatory SL/TP) |
+| `test_phase6.py` | 24 | Carry math vs hand oracle, truncation invariance (no look-ahead), flat-when-carry-adverse, symmetric-swap path untouched, regression guards |
 | `test_execution.py` | ~12 | Live refusal, dry-run default, no-send, every safety branch |
 | `test_costs.py` | ~8 | Spread/slippage/commission math, fill_price, CostModel fields |
 | `test_walkforward.py` | 7 | Fold splitter (no look-ahead), OOS-strictly-after-IS, window sizes, grid filtering |
@@ -467,7 +542,7 @@ git clone https://github.com/Kalahari-Labs/mt5-research && cd mt5-research
 | Total Python lines | ~10,450 |
 | Python modules | 30+ |
 | Test files | 10 |
-| Test cases | 114 |
+| Test cases | 193 |
 | Data files | 28 (CSVs, JSONs, SQLite) |
 | Documentation files | 8 (README, FILL_MODEL, ROBUSTNESS, WALKFORWARD, PORTFOLIO, SHORTHOLDS, GUIDE, EXECUTOR) |
 | Research strategies | 3 |
@@ -492,4 +567,4 @@ git clone https://github.com/Kalahari-Labs/mt5-research && cd mt5-research
 | Executor gate (XM demo) | ⚠️ **2 of 12 combos enabled** — the system refuses to trade most things |
 
 > [!TIP]
-> **The gate refusing to trade is the feature, not a bug.** A system that honestly tells you "no edge found" after 27 years of data and 114 tests is more valuable than one that pretends otherwise.
+> **The gate refusing to trade is the feature, not a bug.** A system that honestly tells you "no edge found" after 27 years of data and 193 tests is more valuable than one that pretends otherwise.

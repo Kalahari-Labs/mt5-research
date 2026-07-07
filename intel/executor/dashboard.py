@@ -87,6 +87,83 @@ def api_chart(store: Store, bridge: Bridge, symbol: str, tf: str,
     return out
 
 
+# hard cap on a manual dashboard order — a fat-fingered lot size should die
+# at validation, not at the broker
+MANUAL_MAX_LOTS = 1.0
+
+
+def api_control(store: Store, body: dict) -> dict:
+    """Human override switches. Everything is journaled. Nothing here can
+    START trading autonomously — halt/kill only remove permission; resume/
+    clear restore the normal (still demo-gated, still risk-vetoed) state."""
+    action = body.get("action")
+    if action == "halt":
+        store.set_state("manual_halt", "paused from dashboard at %s" % utcnow())
+        store.decide("halt", "manual pause from dashboard — no new entries")
+    elif action == "resume":
+        store.clear_state("manual_halt")
+        store.decide("manage", "manual pause lifted from dashboard")
+    elif action == "kill":
+        config.KILL_SWITCH.touch()
+        store.decide("halt", "KILL SWITCH pulled from dashboard — engine flattens and halts")
+    elif action == "clear_kill":
+        config.KILL_SWITCH.unlink(missing_ok=True)
+        store.decide("manage", "kill switch cleared from dashboard")
+    else:
+        return {"ok": False, "error": "unknown action"}
+    return {"ok": True}
+
+
+def api_close_position(store: Store, bridge: Bridge, body: dict) -> dict:
+    """Close one open position from the dashboard. The ticket must be a
+    position the bridge can actually see right now; the close is journaled."""
+    try:
+        ticket = int(body.get("ticket"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "ticket must be an integer"}
+    try:
+        pos = [p for p in bridge.positions() if p.get("ticket") == ticket]
+        if not pos:
+            return {"ok": False, "error": "ticket %d is not an open position" % ticket}
+        r = bridge.close(ticket, comment="mi-dashboard manual close")
+        store.decide("exit", "manual close from dashboard",
+                     symbol=pos[0].get("symbol", ""),
+                     detail={"ticket": ticket, "result": r})
+        return {"ok": True, "result": r}
+    except BridgeError as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+def api_manual_order(store: Store, bridge: Bridge, body: dict) -> dict:
+    """A human trade ticket. Same pipe as the engine — the server-side
+    demo gate in bridge_server.py guards this write like any other — and the
+    same journal. Discipline still applies: whitelisted symbol, capped size,
+    SL and TP mandatory. No stop, no order."""
+    symbol, side = body.get("symbol"), body.get("side")
+    if symbol not in config.SYMBOLS:
+        return {"ok": False, "error": "symbol must be one of %s" % ",".join(config.SYMBOLS)}
+    if side not in ("buy", "sell"):
+        return {"ok": False, "error": "side must be buy or sell"}
+    try:
+        volume = float(body.get("volume"))
+        sl = float(body.get("sl"))
+        tp = float(body.get("tp"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "volume, sl and tp must all be numbers"}
+    if not 0.01 <= volume <= MANUAL_MAX_LOTS:
+        return {"ok": False, "error": "volume must be 0.01–%s lots" % MANUAL_MAX_LOTS}
+    if sl <= 0 or tp <= 0:
+        return {"ok": False, "error": "SL and TP are mandatory — no stop, no order"}
+    try:
+        r = bridge.order(symbol, side, volume, sl, tp, comment="mi-dashboard manual")
+        store.decide("enter", "manual order from dashboard", symbol=symbol,
+                     strategy="manual", side=side,
+                     detail={"volume": volume, "sl": sl, "tp": tp, "result": r})
+        return {"ok": True, "result": r}
+    except BridgeError as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
 def api_summary(store: Store, bridge: Bridge) -> dict:
     out: dict = {"ts": utcnow(), "mode": config.EXEC_MODE,
                  "symbols": config.SYMBOLS,
@@ -99,6 +176,7 @@ def api_summary(store: Store, bridge: Bridge) -> dict:
                  "rules": {
                      "exec_mode": config.EXEC_MODE,
                      "hitl": config.HITL_MODE,
+                     "hitl_ttl_min": config.HITL_TTL_MIN,
                      "max_positions": config.MAX_OPEN_POSITIONS,
                      "risk_pct": config.RISK_PER_TRADE_PCT,
                      "max_daily_loss_pct": config.MAX_DAILY_LOSS_PCT,
@@ -238,6 +316,11 @@ background:#1e2430;border-radius:3px;overflow:hidden;margin-left:4px}
 border-radius:4px;padding:2px 9px;font-size:11px;margin-right:3px;font-family:inherit}
 .cbtn.on{background:#123626;color:var(--green);border-color:var(--green)}
 .cbtn:hover{color:var(--txt)}
+.btn-amb{background:var(--amber);color:var(--bg)}
+#ticket select,#ticket input{background:var(--bg);border:1px solid var(--line);color:var(--txt);
+border-radius:4px;padding:3px 6px;font:11px ui-monospace,monospace;margin:0 4px 4px 0;width:86px}
+#ticket select{width:auto}
+.ctl-row{display:flex;align-items:center;gap:8px;padding:4px 0;flex-wrap:wrap}
 #chart{width:100%;height:280px;display:block;background:#0d1119;border-radius:6px}
 </style></head><body>
 <div id="topline">
@@ -267,11 +350,25 @@ border-radius:4px;padding:2px 9px;font-size:11px;margin-right:3px;font-family:in
 <div class="panel"><h2>Discipline rules — enforced every cycle</h2>
 <div id="rules_panel"></div></div>
 
+<div class="panel"><h2>Manual controls — human overrides, all journaled</h2>
+<div id="controls"><span class="dim">loading&hellip;</span></div>
+<div style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
+<div class="dim" style="font-size:11px;margin-bottom:5px">manual trade ticket — same demo-gated bridge as the bot; SL + TP mandatory, max 1.0 lot</div>
+<div id="ticket">
+<select id="mo_sym"></select>
+<select id="mo_side"><option value="buy">BUY</option><option value="sell">SELL</option></select>
+<input id="mo_vol" type="number" step="0.01" min="0.01" max="1" value="0.01" title="lots">
+<input id="mo_sl" type="number" step="any" placeholder="SL price">
+<input id="mo_tp" type="number" step="any" placeholder="TP price">
+<button class="btn btn-ok" onclick="manualOrder()">SEND ORDER</button>
+</div></div></div>
+
 <div class="panel"><h2>Cooldowns — combos paused after consecutive losses</h2>
 <table id="cooldowns"></table></div>
 
 <div class="panel wide" id="p_pending" style="display:none;border:1px solid var(--amber)">
-<h2>&#9888; Pending Approvals (HITL)</h2><table id="pending"></table></div>
+<h2>Trade approvals — the bot proposes, you decide <span id="hitl_badge" class="badge badge-warn">HITL</span></h2>
+<table id="pending"></table></div>
 
 <div class="panel wide"><h2>Price chart &#8212; live from MT5 <span id="chart_meta" class="badge badge-off">loading&hellip;</span></h2>
 <div id="chart_ctl" style="margin-bottom:8px"></div>
@@ -295,6 +392,7 @@ const fmt=(x,d=2)=>x==null?'&#8212;':Number(x).toFixed(d);
 const cls=x=>x==null?'dim':x>0?'pos':x<0?'neg':'dim';
 let lastGoodSummaryAt=null;   // Date.now() of the last successful /api/summary fetch
 let chartSym=null,chartTf='M15',chartSyms=[],chartBusy=false;
+let hitlOn=false,hitlTtl=15;
 async function j(u){const r=await fetch(u);if(!r.ok)throw new Error(r.status);return r.json()}
 function rows(el,head,data,f){
  el.innerHTML='<tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr>';
@@ -380,18 +478,29 @@ async function tick(){
    ['Partial exit','<span class="rule-val">'+(ru.partial_exit_r>0?'50% off at '+ru.partial_exit_r+'R':'off')+'</span>'],
   ].map(([k,v])=>'<div class="rule-row"><span class="dim">'+k+'</span>'+v+'</div>').join('');
 
+  hitlOn=!!ru.hitl;hitlTtl=ru.hitl_ttl_min||15;
   if(!chartSyms.length&&s.symbols&&s.symbols.length){
    chartSyms=s.symbols;
    // default to the symbol with an open position, else the first configured
    chartSym=(s.positions&&s.positions[0]&&chartSyms.indexOf(s.positions[0].symbol)>=0)?s.positions[0].symbol:chartSyms[0];
    chartCtl();
+   $('mo_sym').innerHTML=chartSyms.map(x=>'<option>'+x+'</option>').join('');
   }
 
-  rows($('positions'),['ticket','symbol','side','lots','open','now','sl','tp','P&L','swap'],
+  $('controls').innerHTML=
+   '<div class="ctl-row">'+(s.manual_halt
+    ?'<button class="btn btn-ok" onclick="control(\\'resume\\')">RESUME ENTRIES</button><span class="amb">paused &#8212; '+s.manual_halt+'</span>'
+    :'<button class="btn btn-amb" onclick="control(\\'halt\\')">PAUSE NEW ENTRIES</button><span class="dim">bot may open positions (open ones stay managed)</span>')+'</div>'+
+   '<div class="ctl-row">'+(s.kill_switch
+    ?'<button class="btn btn-ok" onclick="control(\\'clear_kill\\')">CLEAR KILL SWITCH</button><span class="neg">KILL active &#8212; engine flattens &amp; halts</span>'
+    :'<button class="btn btn-no" onclick="control(\\'kill\\')">KILL SWITCH</button><span class="dim">flatten every position, halt the engine</span>')+'</div>';
+
+  rows($('positions'),['ticket','symbol','side','lots','open','now','sl','tp','P&L','swap','actions'],
    s.positions,px=>'<tr><td>'+px.ticket+'</td><td>'+px.symbol+'</td><td class="'+(px.type===0?'pos':'neg')+'">'+(px.type===0?'buy':'sell')+
    '</td><td>'+px.volume+'</td><td>'+px.price_open+'</td><td>'+px.price_current+'</td><td>'+px.sl+
-   '</td><td>'+px.tp+'</td><td class="'+cls(px.profit)+'">'+fmt(px.profit)+'</td><td class="dim">'+fmt(px.swap)+'</td></tr>');
-  if(!s.positions.length)$('positions').innerHTML+='<tr><td colspan="10" class="dim">flat &#8212; no open positions</td></tr>';
+   '</td><td>'+px.tp+'</td><td class="'+cls(px.profit)+'">'+fmt(px.profit)+'</td><td class="dim">'+fmt(px.swap)+'</td>'+
+   '<td><button class="btn btn-no" onclick="closePos('+px.ticket+',\\''+px.symbol+'\\')">CLOSE</button></td></tr>');
+  if(!s.positions.length)$('positions').innerHTML+='<tr><td colspan="11" class="dim">flat &#8212; no open positions</td></tr>';
  }catch(e){$('alerts').innerHTML='<div class="warn">Dashboard fetch error (summary): '+e+'</div>'}
 
  try{
@@ -526,8 +635,14 @@ async function tick(){
 
  try{
   const pe=await j('/api/pending');
+  $('p_pending').style.display=(pe.length||hitlOn)?'block':'none';
+  $('hitl_badge').className='badge '+(hitlOn?'badge-ok':'badge-off');
+  $('hitl_badge').textContent=hitlOn?'HITL ON':'HITL OFF';
+  if(!pe.length){
+   $('pending').innerHTML='<tr><td class="dim">no proposals waiting &#8212; the engine is scanning every cycle; '+
+    'when a gate-passed setup fires it holds here for '+hitlTtl+' min for your APPROVE / DENY</td></tr>';
+  }
   if(pe.length){
-   $('p_pending').style.display='block';
    rows($('pending'),['symbol','strategy','stars','side','lots','sl','tp','why the bot wants this','expires','actions'],pe,p=>{
     let ctx={};try{ctx=JSON.parse(p.detail||'{}')}catch(ex){}
     const mins=Math.max(0,Math.ceil((Date.parse(p.ts_expires)-Date.now())/60000));
@@ -543,16 +658,52 @@ async function tick(){
      '<td><button class="btn btn-ok" onclick="act('+p.id+',\\'approve\\')">APPROVE</button>'+
      '<button class="btn btn-no" onclick="act('+p.id+',\\'deny\\')">DENY</button></td></tr>';
    });
-  }else{$('p_pending').style.display='none'}
+  }
  }catch(e){}
 }
 
+async function post(url,body){
+ const r=await fetch(url,{method:'POST',body:JSON.stringify(body),
+  headers:{'Content-Type':'application/json'}});
+ return r.json();
+}
 async function act(id,action){
  if(!confirm('Confirm: '+action+' this trade?'))return;
  try{
-  const r=await fetch('/api/act',{method:'POST',body:JSON.stringify({id,action}),
-   headers:{'Content-Type':'application/json'}});
-  const res=await r.json();if(res.ok)tick();else alert('Error: '+res.error);
+  const res=await post('/api/act',{id,action});
+  if(res.ok)tick();else alert('Error: '+res.error);
+ }catch(e){alert('Network error: '+e)}
+}
+const CONTROL_CONFIRM={
+ halt:'Pause NEW entries? Open positions stay managed (trailing, partials, exits).',
+ resume:'Resume entries? The bot may open positions again next cycle.',
+ kill:'KILL SWITCH: the engine will FLATTEN EVERY OPEN POSITION and halt. Continue?',
+ clear_kill:'Clear the kill switch? The engine resumes on its next cycle.'};
+async function control(action){
+ if(!confirm(CONTROL_CONFIRM[action]))return;
+ try{
+  const res=await post('/api/control',{action});
+  if(res.ok)tick();else alert('Error: '+res.error);
+ }catch(e){alert('Network error: '+e)}
+}
+async function closePos(ticket,symbol){
+ if(!confirm('Close '+symbol+' position #'+ticket+' at market?'))return;
+ try{
+  const res=await post('/api/close',{ticket});
+  if(res.ok)tick();else alert('Error: '+res.error);
+ }catch(e){alert('Network error: '+e)}
+}
+async function manualOrder(){
+ const b={symbol:$('mo_sym').value,side:$('mo_side').value,
+  volume:parseFloat($('mo_vol').value),sl:parseFloat($('mo_sl').value),
+  tp:parseFloat($('mo_tp').value)};
+ if(!b.sl||!b.tp){alert('SL and TP are mandatory — no stop, no order.');return}
+ if(!confirm('Send to bridge: '+b.side.toUpperCase()+' '+b.volume+' '+b.symbol+
+  '  SL '+b.sl+'  TP '+b.tp+' ?'))return;
+ try{
+  const res=await post('/api/manual_order',b);
+  if(res.ok){$('mo_sl').value='';$('mo_tp').value='';tick()}
+  else alert('Bridge refused: '+res.error);
  }catch(e){alert('Network error: '+e)}
 }
 
@@ -776,18 +927,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            cl = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(cl).decode()) if cl else {}
             if self.path == "/api/act":
-                cl = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(cl).decode())
                 tid, act = body.get("id"), body.get("action")
                 if self.store.act_on_pending(int(tid), act):
                     resp = {"ok": True}
                 else:
                     resp = {"ok": False,
                             "error": "proposal no longer pending (expired or already acted on)"}
-                self._send(200, json.dumps(resp).encode(), "application/json")
+            elif self.path == "/api/control":
+                resp = api_control(self.store, body)
+            elif self.path == "/api/close":
+                resp = api_close_position(self.store, self.bridge, body)
+            elif self.path == "/api/manual_order":
+                resp = api_manual_order(self.store, self.bridge, body)
             else:
                 self._send(404, b'{"error":"not found"}', "application/json")
+                return
+            self._send(200, json.dumps(self._json_safe(resp)).encode(),
+                       "application/json")
         except Exception as e:
             self._send(500, json.dumps({"error": repr(e)}).encode(), "application/json")
 
